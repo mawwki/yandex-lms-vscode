@@ -1084,18 +1084,43 @@ class Lms {
   }
 
   aiStateHtml() {
+    aiPruneStates();
     const list = aiEntries();
     if (!list.length) {
       return 'ИИ: <b>не настроен</b> — нажмите «AI: ключи», чтобы добавить провайдера и ключ.';
     }
-    const active = list.find(e => e.id === AI_POOL_ACTIVE) || list[0];
+    const ready = list.filter(e => aiCooldownLeft(e) === 0);
+    const active = list.find(e => e.id === AI_POOL_ACTIVE) || ready[0] || list[0];
     const st = AI_POOL_STATE[active.id] || {};
-    const ready = list.filter(e => aiCooldownLeft(e) === 0).length;
-    return 'ИИ: <b>' + escapeHtml(active.label || active.provider) + '</b> · ' + escapeHtml(active.model) +
+    const kinds = {};
+    for (const e of list) {
+      const s = AI_POOL_STATE[e.id] || {};
+      if (aiCooldownLeft(e) > 0) kinds[s.kind || 'error'] = (kinds[s.kind || 'error'] || 0) + 1;
+    }
+    let status;
+    if (ready.length) {
+      status = '<span class="ai-ok">готов</span>';
+    } else if ((kinds.auth || 0) === list.length) {
+      status = '<span class="ai-bad">ключи не приняты</span>';
+    } else if (kinds.limit) {
+      const min = Math.min.apply(null, list.map(e => aiCooldownLeft(e)) || [0]);
+      status = '<span class="ai-warn">лимит ещё ' + Math.max(1, Math.ceil(min / 60000)) + ' мин</span>';
+    } else {
+      const min = Math.min.apply(null, list.map(e => aiCooldownLeft(e)) || [0]);
+      status = '<span class="ai-warn">пауза ' + Math.max(1, Math.ceil(min / 1000)) + ' с</span>';
+    }
+    const tip = list.map(e => {
+      const s = AI_POOL_STATE[e.id] || {};
+      const cd = aiCooldownLeft(e);
+      return aiEntryLabel(e) + ' [' + aiKeyTail(e.apiKey) + ']: ' +
+        (cd ? (s.kind === 'limit' ? 'лимит' : (s.kind === 'auth' ? 'ключ не принят' : 'пауза')) +
+          ' ещё ' + Math.ceil(cd / 1000) + ' с' + (s.lastError ? ' — ' + s.lastError : '') : 'работает');
+    }).join('\n');
+    return '<span title="' + escapeHtml(tip).replace(/\n/g, '&#10;') + '">ИИ: <b>' + escapeHtml(active.label || active.provider) + '</b> · ' + escapeHtml(active.model) +
       ' · ' + escapeHtml(aiKeyTail(active.apiKey)) +
-      (list.length > 1 ? ' · ключей ' + ready + '/' + list.length : '') +
+      (list.length > 1 ? ' · ключей ' + ready.length + '/' + list.length : '') +
       (st.ms ? ' · ' + (st.ms / 1000).toFixed(1) + ' с' : '') +
-      (ready ? ' · <span class="ai-ok">готов</span>' : ' · <span class="ai-bad">лимиты</span>');
+      ' · ' + status + '</span>';
   }
 
   aiBlockHtml() {
@@ -1152,6 +1177,7 @@ class Lms {
   .ai-state { font-size: 0.88em; opacity: 0.85; margin: 0 0 12px; }
   .ai-ok { color: var(--vscode-testing-iconPassed, #3fb950); }
   .ai-bad { color: var(--vscode-charts-red, #f14c4c); }
+  .ai-warn { color: var(--vscode-charts-orange, #d18616); }
   .ai-note { margin: 0 0 14px; padding: 10px 12px; border-radius: 6px; background: var(--vscode-textBlockQuote-background, rgba(127,127,127,0.12)); border-left: 4px solid var(--vscode-charts-purple); }
   .ai-title { font-weight: 600; margin-bottom: 6px; }
   .ai-note h3, .ai-note h4, .ai-note h5, .ai-note h6 { font-size: 1em; margin: 8px 0 4px; }
@@ -3628,7 +3654,7 @@ class AiAutocomplete {
       'Напиши ТОЛЬКО следующую строку кода (или 1-2 строки), которая продолжает решение по этому условию. ' +
       'Никаких пояснений, никакого markdown, никаких ``` — только код, готовый к вставке с правильным отступом. ' +
       'Если по условию для следующей строки нужно вывести результат — выведи его.';
-    const raw = await aiChat(prompt, 'Ты — учитель Python курса Яндекс LMS. Ты даёшь только код, без пояснений.', 15000, null, { maxTokens: 80, temperature: 0, hedge: false });
+    const raw = await aiChat(prompt, 'Ты — учитель Python курса Яндекс LMS. Ты даёшь только код, без пояснений.', 15000, null, { maxTokens: 80, temperature: 0, hedge: false, noPenalty: true });
     let s = String(raw || '').trim();
     s = s.replace(/^```(?:python)?/i, '').replace(/```\s*$/, '').trim();
     s = s.replace(/^(?:Вот|Ответ|Код|Next)[^\n:]*:\s*/i, '');
@@ -3938,6 +3964,19 @@ function aiCooldownLeft(e) {
   return Math.max(0, st.until - Date.now());
 }
 
+function aiPruneStates() {
+  const now = Date.now();
+  let changed = false;
+  for (const k of Object.keys(AI_POOL_STATE)) {
+    const s = AI_POOL_STATE[k];
+    if (!s) { delete AI_POOL_STATE[k]; changed = true; continue; }
+    if (s.until && s.until <= now) { s.until = 0; s.kind = null; changed = true; }
+    // состояния от старых версий (без kind) сбрасываем: они ставились на любые ошибки
+    else if (s.until && !s.kind) { s.until = 0; changed = true; }
+  }
+  if (changed) aiPersistSoon();
+}
+
 function aiOrdered() {
   const ready = [];
   const cooling = [];
@@ -3963,24 +4002,28 @@ function aiMarkOk(entry, ms) {
   const st = AI_POOL_STATE[entry.id] = AI_POOL_STATE[entry.id] || {};
   st.fails = 0;
   st.until = 0;
+  st.kind = null;
   st.lastOk = Date.now();
   if (ms) st.ms = st.ms ? Math.round(st.ms * 0.65 + ms * 0.35) : ms;
   AI_POOL_ACTIVE = entry.id;
   aiPersistSoon();
 }
 
-function aiMarkFail(entry, err) {
+function aiMarkFail(entry, err, silent) {
+  if (silent) return;
   const st = AI_POOL_STATE[entry.id] = AI_POOL_STATE[entry.id] || {};
   const status = Number((err && err.status) || 0);
+  const kind = (err && err.kind) || (status === 401 || status === 403 ? 'auth' : ((status === 402 || status === 429) ? 'limit' : 'error'));
   st.fails = (st.fails || 0) + 1;
   st.lastError = String((err && err.message) || err || '').slice(0, 300);
   st.lastFail = Date.now();
-  let ms = 60 * 1000;
-  if (status === 401 || status === 403) ms = 12 * 60 * 60 * 1000;
-  else if (status === 402 || status === 429) ms = Math.max(60 * 1000, Number(err && err.retryAfterMs) || 5 * 60 * 1000);
-  else if (status >= 500) ms = 90 * 1000;
-  else if (status === 400 || status === 404 || status === 422) ms = 30 * 1000;
+  st.kind = kind;
+  let ms;
+  if (kind === 'auth') ms = 6 * 60 * 60 * 1000;
+  else if (kind === 'limit') ms = Math.max(60 * 1000, Number(err && err.retryAfterMs) || 5 * 60 * 1000);
+  else ms = 20 * 1000;
   st.until = Date.now() + ms;
+  aiLog({ event: 'cooldown', entry: aiEntryLabel(entry), key: aiKeyTail(entry.apiKey), kind, ms, status, error: st.lastError.slice(0, 160) });
   aiPersistSoon();
 }
 
@@ -4042,9 +4085,9 @@ async function aiChatOnce(entry, prompt, system, timeoutMs, images, opts, ctl) {
     const ms = Date.now() - t0;
     aiLog({ event: 'http-error', entry: aiEntryLabel(entry), key: aiKeyTail(entry.apiKey), error: String(e.name || '') + ' ' + String(e.message || e), ms });
     if (e.name === 'AbortError' || /abort|timeout/i.test(String(e.message || ''))) {
-      throw aiError('«' + entry.model + '» не ответила за ' + Math.round(limit / 1000) + ' с', { timeout: true, retryable: true });
+      throw aiError('«' + entry.model + '» не ответила за ' + Math.round(limit / 1000) + ' с', { timeout: true, retryable: true, kind: 'error' });
     }
-    throw aiError('нет связи с ' + entry.baseUrl + ' (' + (e.message || e) + ')', { retryable: true });
+    throw aiError('нет связи с ' + entry.baseUrl + ' (' + (e.message || e) + ')', { retryable: true, kind: 'error' });
   }
   let text = await res.text();
   if (!res.ok && useImages) {
@@ -4066,7 +4109,8 @@ async function aiChatOnce(entry, prompt, system, timeoutMs, images, opts, ctl) {
     } catch (e) { }
     if (res.status === 401) msg = 'неверный API-ключ';
     aiLog({ event: 'http-fail', entry: aiEntryLabel(entry), key: aiKeyTail(entry.apiKey), status: res.status, ms, msg: String(msg).slice(0, 200) });
-    throw aiError('API ' + res.status + ': ' + msg, { status: res.status, retryAfterMs: retryAfterS > 0 ? retryAfterS * 1000 : 0, retryable: true });
+    const kind = (res.status === 401 || res.status === 403) ? 'auth' : ((res.status === 402 || res.status === 429) ? 'limit' : 'error');
+    throw aiError('API ' + res.status + ': ' + msg, { status: res.status, retryAfterMs: retryAfterS > 0 ? retryAfterS * 1000 : 0, retryable: true, kind });
   }
   aiLog({ event: 'http', entry: aiEntryLabel(entry), key: aiKeyTail(entry.apiKey), status: res.status, ms, withImages: useImages });
   let json;
@@ -4126,7 +4170,7 @@ async function aiChat(prompt, system, timeoutMs, images, opts) {
         abortAll();
         return r.text;
       }
-      aiMarkFail(r.entry, r.err);
+      aiMarkFail(r.entry, r.err, o.noPenalty);
       errors.push(r);
       if (Date.now() >= deadline) break;
       if (!inflight.length && !launch()) break;
@@ -4141,8 +4185,9 @@ async function aiChat(prompt, system, timeoutMs, images, opts) {
     const st = x.err && x.err.status ? 'HTTP ' + x.err.status : (x.err && x.err.timeout ? 'таймаут' : 'сбой');
     return aiEntryLabel(x.entry) + ' [' + aiKeyTail(x.entry.apiKey) + '] — ' + st + ': ' + String((x.err && x.err.message) || x.err || '').slice(0, 140);
   });
-  const has429 = errors.some(x => x.err && (x.err.status === 402 || x.err.status === 429));
-  const tail = has429
+  const kinds = errors.map(x => (x.err && x.err.kind) || 'error');
+  const allLimited = errors.length && kinds.every(k => k === 'limit');
+  const tail = allLimited
     ? '\nВсе ключи упёрлись в лимиты. Добавьте ещё один ключ (кнопка «AI: ключи») или подождите — лимиты сбрасываются автоматически.'
     : '';
   throw new Error('ИИ не ответил.\n' + lines.join('\n') + tail);
@@ -4546,6 +4591,7 @@ async function activate(context) {
     }
   } catch (e) { }
   AI_POOL_PERSIST = (json) => context.secrets.store(AI_POOL_SECRET, json);
+  aiPruneStates();
   // раз в сессию сканируем задания на картинки (фоном)
   setTimeout(() => { lms.autoScan = true; lms.scanImages().catch(() => { }); }, 8000);
   try { context.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider('lms', lms.docProvider)); } catch (e) { }
