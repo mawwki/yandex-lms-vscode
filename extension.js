@@ -4066,6 +4066,7 @@ async function aiChatOnce(entry, prompt, system, timeoutMs, images, opts, ctl) {
       msg = (j2.error && (j2.error.message || j2.error)) || j2.message || msg;
     } catch (e) { }
     if (res.status === 401) msg = 'неверный API-ключ';
+    else if (res.status === 403 && /openrouter/i.test(String(entry.baseUrl || ''))) msg = 'модель отклонена политикой OpenRouter — у бесплатных моделей нужно включить логирование промптов в настройках приватности, либо сменить модель/провайдера';
     aiLog({ event: 'http-fail', entry: aiEntryLabel(entry), key: aiKeyTail(entry.apiKey), status: res.status, ms, msg: String(msg).slice(0, 200) });
     const kind = res.status === 401 ? 'auth' : (res.status === 403 ? 'denied' : ((res.status === 402 || res.status === 429) ? 'limit' : 'error'));
     throw aiError('API ' + res.status + ': ' + msg, { status: res.status, retryAfterMs: retryAfterS > 0 ? retryAfterS * 1000 : 0, retryable: true, kind });
@@ -4149,9 +4150,10 @@ async function aiChat(prompt, system, timeoutMs, images, opts) {
   });
   const kinds = errors.map(x => (x.err && x.err.kind) || 'error');
   const allLimited = errors.length && kinds.every(k => k === 'limit');
+  const allDenied = errors.length && kinds.every(k => k === 'denied' || k === 'auth');
   const tail = allLimited
     ? '\nВсе ключи упёрлись в лимиты. Добавьте ещё один ключ (кнопка «AI: ключи») или подождите — лимиты сбрасываются автоматически.'
-    : '';
+    : (allDenied ? '\nПровайдер отклонил модели (403). На OpenRouter включите логирование промптов в настройках приватности или смените модель на платную — бесплатные модели блокируются (Security Policy).' : '');
   throw new Error('ИИ не ответил.\n' + lines.join('\n') + tail);
 }
 
