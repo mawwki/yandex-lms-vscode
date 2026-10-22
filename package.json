@@ -2,7 +2,7 @@
   "name": "yandex-lms",
   "displayName": "Яндекс LMS",
   "description": "Полный доступ к LMS Яндекса (lms.yandex.ru) внутри VS Code: условие слева, код справа, отправка решения одной клавишей",
-  "version": "1.4.5",
+  "version": "1.4.9",
   "publisher": "local",
   "license": "MIT",
   "engines": {

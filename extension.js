@@ -2015,13 +2015,24 @@ class Lms {
     const panel = this.panel;
     const st = webviewState.get(panel);
     if (!st) return;
-    setTimeout(async () => {
+    let attempt = 0;
+    const check = async () => {
       if (this.panel !== panel || st.ready) return;
+      attempt++;
+      webviewLog('panel-not-ready', { attempt });
+      // Лечим гонку service worker: перезагружаем документ ВНУТРИ того же
+      // webview (новый html), не создавая панель заново.
+      if (attempt <= 2) {
+        const html = st.last;
+        try {
+          if (html) panel.webview.html = html.replace('</body>', '<!-- reload ' + attempt + ' --></body>');
+        } catch (e) { webviewLog('panel-reload-error', { error: String(e.message || e) }); }
+        setTimeout(check, 4000);
+        return;
+      }
       this.panelRetries = (this.panelRetries || 0) + 1;
-      webviewLog('panel-not-ready', { retry: this.panelRetries });
       try { this.context.globalState.update('yandexLms.swBroken', true); } catch (e) { }
-      // Панель не поднялась: не пересоздаём её и не трогаем webview-команды
-      // (это усиливает гонку service worker), а показываем условие текстом.
+      // Панель не поднялась даже после перезагрузок — показываем условие текстом.
       this.webviewBroken = true;
       try { panel.dispose(); } catch (e) { }
       if (this.panel === panel) this.panel = null;
@@ -2037,7 +2048,8 @@ class Lms {
       } else if (again === 'Починить webview') {
         await vscode.commands.executeCommand('yandexLms.fixWebviewProfile');
       }
-    }, 5000);
+    };
+    setTimeout(check, 5000);
   }
 
   async openPanel(t, detail, serverCode) {
@@ -4572,6 +4584,59 @@ async function activate(context) {
   } catch (e) { }
   AI_POOL_PERSIST = (json) => context.secrets.store(AI_POOL_SECRET, json);
   aiPruneStates();
+  // Диагностика: если есть файл-флаг, на старте открываем пробный webview и пишем,
+  // дошёл ли до нас скрипт (проверка регистрации service worker).
+  try {
+    const flag = path.join(os.tmpdir(), 'yandex-lms-diag', 'probe-webview.txt');
+    if (fs.existsSync(flag)) {
+      try { fs.rmSync(flag, { force: true }); } catch (e) { }
+      const t0 = Date.now();
+      const media = vscode.Uri.joinPath(context.extensionUri, 'media');
+      const cases = [
+        { name: 'A-plain', opts: { enableScripts: true }, focus: true },
+        { name: 'B-retain', opts: { enableScripts: true, retainContextWhenHidden: true }, focus: true },
+        { name: 'C-roots', opts: { enableScripts: true, localResourceRoots: [media] }, focus: true },
+        { name: 'D-full', opts: { enableScripts: true, retainContextWhenHidden: true, disableServiceWorker: true, localResourceRoots: [media] }, focus: false },
+        { name: 'E-real', opts: { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [media] }, focus: false }
+      ];
+      webviewLog('probe-start', {});
+      let i = 0;
+      const step = () => {
+        if (i >= cases.length) { webviewLog('probe-end', { ms: Date.now() - t0 }); return; }
+        const c = cases[i++];
+        const s0 = Date.now();
+        let got = false;
+        let pp = null;
+        try {
+          pp = vscode.window.createWebviewPanel('yandexLmsProbe' + i, 'probe ' + c.name, { viewColumn: vscode.ViewColumn.One, preserveFocus: c.focus }, c.opts);
+          let html = '<!DOCTYPE html><html><body>' + c.name + '<script>const v=acquireVsCodeApi();v.postMessage({type:"ok"});</script></body></html>';
+          if (c.name === 'E-real') {
+            try {
+              const jf = path.join(os.tmpdir(), 'yandex-lms-diag', 'task-detail-latest.json');
+              const jj = JSON.parse(fs.readFileSync(jf, 'utf8'));
+              const prev = lms.panel;
+              lms.panel = pp;
+              html = lms.taskHtml({ taskId: jj.id, taskTitle: jj.title }, jj, null);
+              lms.panel = prev;
+              fs.writeFileSync(path.join(os.tmpdir(), 'yandex-lms-diag', 'last-panel.html'), html, 'utf8');
+            } catch (e) { webviewLog('probe-html-error', { error: String(e.message || e) }); }
+          }
+          pp.webview.html = html;
+          pp.webview.onDidReceiveMessage(m => {
+            if (!got) { got = true; webviewLog('probe-ok', { name: c.name, ms: Date.now() - s0, type: String(m && m.type) }); }
+          });
+        } catch (e) {
+          webviewLog('probe-throw', { name: c.name, error: String(e.message || e) });
+        }
+        setTimeout(() => {
+          if (!got) webviewLog('probe-fail', { name: c.name });
+          try { if (pp) pp.dispose(); } catch (e) { }
+          setTimeout(step, 800);
+        }, 2500);
+      };
+      step();
+    }
+  } catch (e) { webviewLog('probe-error', { error: String(e.message || e) }); }
   // раз в сессию сканируем задания на картинки (фоном)
   setTimeout(() => { lms.autoScan = true; lms.scanImages().catch(() => { }); }, 8000);
   try { context.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider('lms', lms.docProvider)); } catch (e) { }
