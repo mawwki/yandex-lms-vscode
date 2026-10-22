@@ -2001,7 +2001,10 @@ class Lms {
     // отложенная установка html пересоздаёт iframe и срывает регистрацию
     // service worker («InvalidStateError: The document is in an invalid state»).
     // retainContextWhenHidden не даёт Chromium выгрузить документ в фоне.
-    const panel = vscode.window.createWebviewPanel('yandexLmsTask', t.taskTitle, { viewColumn: vscode.ViewColumn.One, preserveFocus: false }, {
+    // Уникальный viewType на каждую панель: повторное создание webview с тем же
+    // viewType после закрытия предыдущего срывает регистрацию service worker.
+    const viewType = 'yandexLmsTask' + Date.now().toString(36);
+    const panel = vscode.window.createWebviewPanel(viewType, t.taskTitle, { viewColumn: vscode.ViewColumn.One, preserveFocus: false }, {
       enableScripts: true,
       retainContextWhenHidden: true,
       disableServiceWorker: true,
@@ -4545,7 +4548,15 @@ async function welcomeWebview(context) {
 async function closeAllTabs() {
   try { await vscode.workspace.saveAll(false); } catch (e) { }
   const tabs = [];
-  for (const group of vscode.window.tabGroups.all) tabs.push(...group.tabs);
+  for (const group of vscode.window.tabGroups.all) {
+    for (const tab of group.tabs) {
+      const inp = tab.input;
+      // Панель условия не закрываем: её пересоздание — единственный известный
+      // путь, на котором VS Code срывает регистрацию service worker.
+      if (inp && typeof inp.viewType === 'string' && inp.viewType.indexOf('yandexLmsTask') === 0) continue;
+      tabs.push(tab);
+    }
+  }
   if (!tabs.length) return;
   let closed = false;
   try { closed = await vscode.window.tabGroups.close(tabs, true); } catch (e) { closed = false; }
@@ -4560,14 +4571,6 @@ async function activate(context) {
     if (await lms.context.globalState.get('yandexLms.swBroken', false)) {
       await lms.context.globalState.update('yandexLms.swBroken', false);
       webviewLog('sw-broken-hint', {});
-      const pick = await vscode.window.showWarningMessage(
-        'LMS: панель задачи не загрузилась из-за сломанного кэша webview в VS Code. Условие показывается текстом. Починить?',
-        'Починить (перезапуск VS Code)',
-        'Позже'
-      );
-      if (pick === 'Починить (перезапуск VS Code)') {
-        await vscode.commands.executeCommand('yandexLms.fixWebviewProfile');
-      }
     }
   } catch (e) { }
 
@@ -4584,59 +4587,6 @@ async function activate(context) {
   } catch (e) { }
   AI_POOL_PERSIST = (json) => context.secrets.store(AI_POOL_SECRET, json);
   aiPruneStates();
-  // Диагностика: если есть файл-флаг, на старте открываем пробный webview и пишем,
-  // дошёл ли до нас скрипт (проверка регистрации service worker).
-  try {
-    const flag = path.join(os.tmpdir(), 'yandex-lms-diag', 'probe-webview.txt');
-    if (fs.existsSync(flag)) {
-      try { fs.rmSync(flag, { force: true }); } catch (e) { }
-      const t0 = Date.now();
-      const media = vscode.Uri.joinPath(context.extensionUri, 'media');
-      const cases = [
-        { name: 'A-plain', opts: { enableScripts: true }, focus: true },
-        { name: 'B-retain', opts: { enableScripts: true, retainContextWhenHidden: true }, focus: true },
-        { name: 'C-roots', opts: { enableScripts: true, localResourceRoots: [media] }, focus: true },
-        { name: 'D-full', opts: { enableScripts: true, retainContextWhenHidden: true, disableServiceWorker: true, localResourceRoots: [media] }, focus: false },
-        { name: 'E-real', opts: { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [media] }, focus: false }
-      ];
-      webviewLog('probe-start', {});
-      let i = 0;
-      const step = () => {
-        if (i >= cases.length) { webviewLog('probe-end', { ms: Date.now() - t0 }); return; }
-        const c = cases[i++];
-        const s0 = Date.now();
-        let got = false;
-        let pp = null;
-        try {
-          pp = vscode.window.createWebviewPanel('yandexLmsProbe' + i, 'probe ' + c.name, { viewColumn: vscode.ViewColumn.One, preserveFocus: c.focus }, c.opts);
-          let html = '<!DOCTYPE html><html><body>' + c.name + '<script>const v=acquireVsCodeApi();v.postMessage({type:"ok"});</script></body></html>';
-          if (c.name === 'E-real') {
-            try {
-              const jf = path.join(os.tmpdir(), 'yandex-lms-diag', 'task-detail-latest.json');
-              const jj = JSON.parse(fs.readFileSync(jf, 'utf8'));
-              const prev = lms.panel;
-              lms.panel = pp;
-              html = lms.taskHtml({ taskId: jj.id, taskTitle: jj.title }, jj, null);
-              lms.panel = prev;
-              fs.writeFileSync(path.join(os.tmpdir(), 'yandex-lms-diag', 'last-panel.html'), html, 'utf8');
-            } catch (e) { webviewLog('probe-html-error', { error: String(e.message || e) }); }
-          }
-          pp.webview.html = html;
-          pp.webview.onDidReceiveMessage(m => {
-            if (!got) { got = true; webviewLog('probe-ok', { name: c.name, ms: Date.now() - s0, type: String(m && m.type) }); }
-          });
-        } catch (e) {
-          webviewLog('probe-throw', { name: c.name, error: String(e.message || e) });
-        }
-        setTimeout(() => {
-          if (!got) webviewLog('probe-fail', { name: c.name });
-          try { if (pp) pp.dispose(); } catch (e) { }
-          setTimeout(step, 800);
-        }, 2500);
-      };
-      step();
-    }
-  } catch (e) { webviewLog('probe-error', { error: String(e.message || e) }); }
   // раз в сессию сканируем задания на картинки (фоном)
   setTimeout(() => { lms.autoScan = true; lms.scanImages().catch(() => { }); }, 8000);
   try { context.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider('lms', lms.docProvider)); } catch (e) { }
