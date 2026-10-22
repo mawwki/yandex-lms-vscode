@@ -4052,7 +4052,18 @@ async function activate(context) {
   context.subscriptions.push(vscode.languages.registerInlineCompletionItemProvider({ language: 'python', pattern: '**/*.py' }, ac));
   context.subscriptions.push({ dispose: () => ac.cancel() });
 
-  vscode.window.createTreeView('yandexLms.tree', { treeDataProvider: lms.tree, showCollapseAll: true });
+  const lmsView = vscode.window.createTreeView('yandexLms.tree', { treeDataProvider: lms.tree, showCollapseAll: true });
+  context.subscriptions.push(lmsView);
+  // При открытии панели LMS (клик по иконке) закрываем все вкладки:
+  // приветствие, открытые файлы и т.п. Несохранённые файлы не трогаем.
+  context.subscriptions.push(lmsView.onDidChangeVisibility(e => {
+    if (!e.visible) return;
+    for (const group of vscode.window.tabGroups.all) {
+      const tabs = group.tabs.filter(tab => !tab.isDirty);
+      if (!tabs.length) continue;
+      Promise.resolve(vscode.window.tabGroups.close(tabs, true)).catch(() => { });
+    }
+  }));
   context.subscriptions.push(
     vscode.commands.registerCommand('yandexLms.login', async () => {
       const login = await vscode.window.showInputBox({ prompt: 'Логин Яндекса (почта)', ignoreFocusOut: true });
