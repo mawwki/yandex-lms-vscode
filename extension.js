@@ -1997,28 +1997,18 @@ class Lms {
   }
 
   createTaskPanel(t) {
-    const panel = vscode.window.createWebviewPanel('yandexLmsTask', t.taskTitle, vscode.ViewColumn.One, { enableScripts: true });
-    // Панель должна быть АКТИВНОЙ: в фоновой вкладке Chromium замораживает
-    // документ iframe'а, и регистрация service worker падает с
-    // «InvalidStateError: The document is in an invalid state».
-    try { panel.reveal(vscode.ViewColumn.One, false); } catch (e) { }
-    try {
-      panel.webview.options = { enableScripts: true, disableServiceWorker: true };
-    } catch (e) { }
+    // Все опции — в конструкторе, html — сразу после. Любая смена options или
+    // отложенная установка html пересоздаёт iframe и срывает регистрацию
+    // service worker («InvalidStateError: The document is in an invalid state»).
+    // retainContextWhenHidden не даёт Chromium выгрузить документ в фоне.
+    const panel = vscode.window.createWebviewPanel('yandexLmsTask', t.taskTitle, { viewColumn: vscode.ViewColumn.One, preserveFocus: false }, {
+      enableScripts: true,
+      retainContextWhenHidden: true,
+      disableServiceWorker: true,
+      localResourceRoots: [vscode.Uri.joinPath(this.context.extensionUri, 'media')]
+    });
     this.attachPanel(panel);
     return panel;
-  }
-
-  async warmupServiceWorker() {
-    // Регистрация service worker происходит в iframe'е webview. Если отдать
-    // html сразу, документ «схлопывается» и регистрация падает
-    // (InvalidStateError). Поэтому сначала создаём webview БЕЗ html —
-    // регистрация успевает завершиться, и дальше панели грузятся сразу.
-    try {
-      const p = vscode.window.createWebviewPanel('yandexLmsWarmup', 'LMS', vscode.ViewColumn.One, { enableScripts: false });
-      await sleep(2500);
-      try { p.dispose(); } catch (e) { }
-    } catch (e) { }
   }
 
   watchPanelReady(t, detail, serverCode) {
@@ -2030,58 +2020,31 @@ class Lms {
       this.panelRetries = (this.panelRetries || 0) + 1;
       webviewLog('panel-not-ready', { retry: this.panelRetries });
       try { this.context.globalState.update('yandexLms.swBroken', true); } catch (e) { }
-      if (this.panelRetries === 1) {
-        // перезагружаем webview в свежем документе — так VS Code чинит гонку
-        // регистрации service worker; саму панель не трогаем
-        try {
-          await vscode.commands.executeCommand('workbench.action.webview.reloadWebviewAction');
-        } catch (e) { }
-        await sleep(2500);
-        if (this.panel === panel && st.ready) {
-          webviewLog('panel-recovered', { retry: this.panelRetries });
-          return;
-        }
-      }
-      // не помогло — закрываем битую панель и создаём ровно одну новую
+      // Панель не поднялась: не пересоздаём её и не трогаем webview-команды
+      // (это усиливает гонку service worker), а показываем условие текстом.
+      this.webviewBroken = true;
       try { panel.dispose(); } catch (e) { }
       if (this.panel === panel) this.panel = null;
-      if (this.panelRetries >= 2) {
-        this.panelRetries = 0;
-        this.webviewBroken = true;
-        webviewLog('panel-fallback-text', {});
-        await this.showTaskDoc(true);
-        const again = await vscode.window.showInformationMessage(
-          'LMS: панель условия не загрузилась, показал условие текстом. Кэш webview VS Code сломан — лечится перезапуском.',
-          'Попробовать панель ещё раз',
-          'Починить webview'
-        );
-        if (again === 'Попробовать панель ещё раз') {
-          this.webviewBroken = false;
-          await this.showTaskPanel(this.detailCache.get(String(t.taskId)) || { title: t.taskTitle }, serverCode);
-        } else if (again === 'Починить webview') {
-          await vscode.commands.executeCommand('yandexLms.fixWebviewProfile');
-        }
-        return;
+      await this.showTaskDoc(true);
+      const again = await vscode.window.showInformationMessage(
+        'LMS: VS Code не смог загрузить webview-панель (service worker). Условие показано текстом.',
+        'Ещё раз',
+        'Починить webview'
+      );
+      if (again === 'Ещё раз') {
+        this.webviewBroken = false;
+        await this.showTaskPanel(this.detailCache.get(String(t.taskId)) || { title: t.taskTitle }, serverCode);
+      } else if (again === 'Починить webview') {
+        await vscode.commands.executeCommand('yandexLms.fixWebviewProfile');
       }
-      // чистить профиль на живом VS Code нельзя: это ломает webview до перезапуска.
-      // Поэтому просто пробуем открыть панель заново.
-      await sleep(500);
-      await this.openPanel(t, detail, serverCode);
-    }, 4000);
+    }, 5000);
   }
 
   async openPanel(t, detail, serverCode) {
-    const html = this.taskHtml(t, detail, serverCode);
     const panel = this.createTaskPanel(t);
     this.panel = panel;
-    // html отдаём с задержкой: к этому моменту VS Code успевает зарегистрировать
-    // service worker для iframe'а, иначе регистрация срывается
-    // (InvalidStateError) и панель остаётся пустой.
-    setTimeout(() => {
-      if (this.panel !== panel) return;
-      try { assignWebviewHtml(panel, html); } catch (e) { }
-      this.watchPanelReady(t, detail, serverCode);
-    }, 2000);
+    try { assignWebviewHtml(panel, this.taskHtml(t, detail, serverCode)); } catch (e) { }
+    this.watchPanelReady(t, detail, serverCode);
   }
 
   async showTaskPanel(detail, serverCode) {
