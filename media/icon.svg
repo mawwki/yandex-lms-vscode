@@ -1,29 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100">
-  <defs>
-    <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#4F46E5"/>
-      <stop offset="100%" stop-color="#06B6D4"/>
-    </linearGradient>
-    <filter id="glow">
-      <feGaussianBlur stdDeviation="2" result="coloredBlur"/>
-      <feMerge>
-        <feMergeNode in="coloredBlur"/>
-        <feMergeNode in="SourceGraphic"/>
-      </feMerge>
-    </filter>
-  </defs>
-  
-  <rect x="0" y="0" width="100" height="100" rx="20" fill="url(#grad)" filter="url(#glow)"/>
-  
-  <text x="50" y="55" font-family=""Segoe UI", "Roboto", Arial, sans-serif" font-size="38" font-weight="bold" fill="white" text-anchor="middle" letter-spacing="-2">LMS</text>
-  
-  <circle cx="30" cy="30" r="3" fill="white" opacity="0.6">
-    <animate attributeName="opacity" values="0.6;1;0.6" dur="3s" repeatCount="indefinite"/>
-  </circle>
-  <circle cx="70" cy="30" r="3" fill="white" opacity="0.6">
-    <animate attributeName="opacity" values="0.6;1;0.6" dur="3s" repeatCount="indefinite"/>
-  </circle>
-  <circle cx="50" cy="70" r="3" fill="white" opacity="0.6">
-    <animate attributeName="opacity" values="0.6;1;0.6" dur="3s" repeatCount="indefinite"/>
-  </circle>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+  <path fill="#FFFFFF" d="M2 6h3v9h3v3H2z"/>
+  <g fill="none" stroke="#FFFFFF" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter">
+    <path d="M10 18V6l2 5 2-5v12"/>
+    <path d="M21 7H17v5h4v5h-4"/>
+  </g>
 </svg>
