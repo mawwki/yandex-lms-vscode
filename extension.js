@@ -1067,6 +1067,8 @@ class Lms {
         await this.aiClear();
       } else if (msg.type === 'aiSettings') {
         await this.aiSettingsUI();
+      } else if (msg.type === 'aiKeys') {
+        await this.aiKeysUI();
       }
     });
   }
@@ -1082,12 +1084,18 @@ class Lms {
   }
 
   aiStateHtml() {
-    const c = aiConfig();
-    const ready = c.provider && c.provider !== 'none' && (c.apiKey || c.provider === 'ollama') && c.model;
-    if (!ready) {
-      return 'ИИ: <b>не настроен</b> — нажмите «AI: настройки», чтобы выбрать провайдера и ключ.';
+    const list = aiEntries();
+    if (!list.length) {
+      return 'ИИ: <b>не настроен</b> — нажмите «AI: ключи», чтобы добавить провайдера и ключ.';
     }
-    return 'ИИ: <b>' + escapeHtml(c.label) + '</b> · ' + escapeHtml(c.model) + ' · <span class="ai-ok">готов</span>';
+    const active = list.find(e => e.id === AI_POOL_ACTIVE) || list[0];
+    const st = AI_POOL_STATE[active.id] || {};
+    const ready = list.filter(e => aiCooldownLeft(e) === 0).length;
+    return 'ИИ: <b>' + escapeHtml(active.label || active.provider) + '</b> · ' + escapeHtml(active.model) +
+      ' · ' + escapeHtml(aiKeyTail(active.apiKey)) +
+      (list.length > 1 ? ' · ключей ' + ready + '/' + list.length : '') +
+      (st.ms ? ' · ' + (st.ms / 1000).toFixed(1) + ' с' : '') +
+      (ready ? ' · <span class="ai-ok">готов</span>' : ' · <span class="ai-bad">лимиты</span>');
   }
 
   aiBlockHtml() {
@@ -1143,6 +1151,7 @@ class Lms {
   button:hover { filter: brightness(1.1); }
   .ai-state { font-size: 0.88em; opacity: 0.85; margin: 0 0 12px; }
   .ai-ok { color: var(--vscode-testing-iconPassed, #3fb950); }
+  .ai-bad { color: var(--vscode-charts-red, #f14c4c); }
   .ai-note { margin: 0 0 14px; padding: 10px 12px; border-radius: 6px; background: var(--vscode-textBlockQuote-background, rgba(127,127,127,0.12)); border-left: 4px solid var(--vscode-charts-purple); }
   .ai-title { font-weight: 600; margin-bottom: 6px; }
   .ai-note h3, .ai-note h4, .ai-note h5, .ai-note h6 { font-size: 1em; margin: 8px 0 4px; }
@@ -1184,8 +1193,8 @@ class Lms {
   </div>
   <div class="actions ai-row">
     ${t.isMarkers
-      ? '<button data-act="pep8" class="secondary">PEP 8</button><button data-act="aiSettings" class="secondary">AI: настройки</button><button data-act="aiClear" class="secondary">Очистить</button>'
-      : '<button data-act="pep8" class="secondary">PEP 8</button><button data-act="aiHints" class="secondary">AI: подсказки</button><button data-act="aiCheck" class="secondary">AI: проверить</button><button data-act="aiSolve" class="secondary">AI: решение</button><button data-act="aiFix" class="secondary">AI: исправить</button><button data-act="aiClear" class="secondary">Очистить</button><button data-act="aiSettings" class="secondary">AI: настройки</button>'}
+      ? '<button data-act="pep8" class="secondary">PEP 8</button><button data-act="aiSettings" class="secondary">AI: настройки</button><button data-act="aiKeys" class="secondary">AI: ключи</button><button data-act="aiClear" class="secondary">Очистить</button>'
+      : '<button data-act="pep8" class="secondary">PEP 8</button><button data-act="aiHints" class="secondary">AI: подсказки</button><button data-act="aiCheck" class="secondary">AI: проверить</button><button data-act="aiSolve" class="secondary">AI: решение</button><button data-act="aiFix" class="secondary">AI: исправить</button><button data-act="aiClear" class="secondary">Очистить</button><button data-act="aiSettings" class="secondary">AI: настройки</button><button data-act="aiKeys" class="secondary">AI: ключи</button>'}
   </div>
   <div class="ai-state">${aiState}</div>
   ${aiBlock}
@@ -1300,14 +1309,9 @@ class Lms {
       return;
     }
     const c = aiConfig();
-    if (!c.provider || c.provider === 'none') {
-      const go = await vscode.window.showInformationMessage('ИИ не настроен. Настроить провайдера сейчас?', 'Настроить');
-      if (go === 'Настроить') await this.aiSettingsUI();
-      return;
-    }
-    if (!c.apiKey && c.provider !== 'ollama') {
-      const go = await vscode.window.showInformationMessage('Не задан API-ключ для «' + c.label + '». Настроить сейчас?', 'Настроить');
-      if (go === 'Настроить') await this.aiSettingsUI();
+    if (!aiHasConfig()) {
+      const go = await vscode.window.showInformationMessage('ИИ не настроен. Добавить провайдера и ключ сейчас?', 'Настроить');
+      if (go === 'Настроить') await this.aiKeysUI();
       return;
     }
     const statement = this.aiStatement();
@@ -1316,8 +1320,8 @@ class Lms {
       return;
     }
     const code = this.aiCurrentCode();
-    aiLog({ event: 'start', mode, provider: c.provider, model: c.model, baseUrl: c.baseUrl, hasKey: !!c.apiKey, filePath: t.filePath, codeLen: code.length, statementLen: statement.length });
-    vscode.window.showInformationMessage('LMS: ИИ думает... (' + c.label + ', ' + c.model + ')');
+    aiLog({ event: 'start', mode, provider: c.provider, model: c.model, pool: aiEntries().map(e => aiEntryLabel(e)), filePath: t.filePath, codeLen: code.length, statementLen: statement.length });
+    vscode.window.showInformationMessage('LMS: ИИ думает… (' + this.aiStatusText() + ')');
     let text = '';
     try {
       if (mode === 'check') {
@@ -1334,7 +1338,7 @@ class Lms {
           '3. **Как исправить** — что дописать или заменить, без готового кода целиком.\n' +
           'Пиши по-русски, коротко. Без markdown-заголовков #, только жирные подписи и списки.\n' +
           'В самом конце добавь отдельную строку: УРОК: <одно предложение — какую ошибку ученик делает повторно и как её избежать>. Если повторяющихся ошибок нет — напиши «УРОК: нет».';
-        text = await aiChat(prompt, this.aiSystemPrompt() + ' Ты — строгий, но доброжелательный проверяющий.', 90000, this.statementImages);
+        text = await aiChat(prompt, this.aiSystemPrompt() + ' Ты — строгий, но доброжелательный проверяющий.', 60000, this.statementImages, { maxTokens: 900 });
         const sp = this.splitLesson(text);
         this.aiNote = sp.text;
         if (sp.lesson) await this.aiRememberLesson(sp.lesson);
@@ -1359,7 +1363,7 @@ class Lms {
           '6. Учитывай список ошибок выше: не подсказывай то, что ученик уже наступал.\n' +
           'Формат ответа: markdown-нумерованный список шагов, без заголовков #, без блоков кода.\n' +
           'В самом конце добавь строку: УРОК: <одно предложение о типичной ошибке в этом задании>. Если ошибок нет — «УРОК: нет».';
-        text = await aiChat(prompt, this.aiSystemPrompt() + ' Ты — наставник, который ведёт ученика за руку, но не даёт готового решения.', 90000, this.statementImages);
+        text = await aiChat(prompt, this.aiSystemPrompt() + ' Ты — наставник, который ведёт ученика за руку, но не даёт готового решения.', 60000, this.statementImages, { maxTokens: 900 });
         const sp = this.splitLesson(text);
         this.aiHints = sp.text;
         if (sp.lesson) await this.aiRememberLesson(sp.lesson);
@@ -1374,20 +1378,40 @@ class Lms {
         this.aiLessonsText() +
         this.aiStudentRules() + '\n\n' +
         'Напиши полное решение задачи на Python.\n' +
-        'Требования: только разрешённые конструкции, чтение через input(), вывод через print(), никаких import и sys. ' +
-        'Код должен решать задачу для всех допустимых входных данных.\n' +
+        'Сначала молча (в уме, без вывода) разбери: что подаётся на вход, в каком формате, какие граничные случаи возможны ' +
+        '(пустой ввод, ноль, отрицательные числа, одна строка, повторы), и есть ли в условии примеры — сверь свой код с ними.\n' +
+        'Требования к коду:\n' +
+        '1. Только разрешённые конструкции курса (см. выше), без import и sys.\n' +
+        '2. Чтение через input(), вывод строго в формате из условия (лишних строк и подсказок не печатать).\n' +
+        '3. Решение должно работать для всех допустимых входных данных, а не только для примера.\n' +
+        '4. Отступы 4 пробела, код компилируется без ошибок.\n' +
         'В конце ответа добавь строку: УРОК: <одно предложение — на какую типичную граблю здесь можно наступить>. Если нет — «УРОК: нет».\n' +
         'Ответь ТОЛЬКО кодом в одном блоке ```python ... ```.';
-      text = await aiChat(prompt, this.aiSystemPrompt() + ' Ты — автор эталонных решений курса.', 90000, this.statementImages);
+      text = await aiChat(prompt, this.aiSystemPrompt() + ' Ты — автор эталонных решений курса.', 90000, this.statementImages, { maxTokens: 1800, temperature: 0.15 });
       aiLog({ event: 'response', mode, raw: String(text).slice(0, 6000) });
       const sp = this.splitLesson(text);
       const m = /```(?:python)?\s*([\s\S]*?)```/i.exec(sp.text);
-      const solution = (m ? m[1] : sp.text).replace(/^\s*```.*$/gm, '').trim();
+      let solution = (m ? m[1] : sp.text).replace(/^\s*```.*$/gm, '').trim();
       if (!solution) throw new Error('Модель вернула пустое решение.');
-      await this.aiFileWrite(solution + '\n');
+      // самопроверка: запрещённые конструкции курса + компиляция, до 2 попыток починки
+      let leftProblems = [];
+      if (cfg().get('ai.selfCheck') !== false) {
+        for (let round = 0; round < 2; round++) {
+          const v = await this.aiValidateCode(solution);
+          leftProblems = v.problems;
+          if (v.ok) break;
+          aiLog({ event: 'selfcheck', round: round + 1, problems: v.problems });
+          const fixed = await this.aiRepairCode(solution, v.problems, statement);
+          if (!fixed || fixed === solution) break;
+          solution = fixed;
+        }
+        const finalCheck = await this.aiValidateCode(solution);
+        leftProblems = finalCheck.problems;
+      }
       if (sp.lesson) await this.aiRememberLesson(sp.lesson);
       await this.aiFileWrite(solution + '\n');
-      this.aiHints = 'Решение от ИИ вставлено в файл:\n\n```python\n' + solution + '\n```';
+      this.aiHints = 'Решение от ИИ вставлено в файл:\n\n```python\n' + solution + '\n```' +
+        (leftProblems.length ? '\n\n⚠ Не удалось убрать: ' + leftProblems.join('; ') : '');
       this.output().appendLine('=== AI: решение ===\n' + solution);
       await this.showTaskPanel(this.detailCache.get(String(t.taskId)) || { title: t.taskTitle }, null);
       vscode.window.showInformationMessage('LMS: решение ИИ вставлено в файл (Ctrl+Z — отменить).');
@@ -1450,10 +1474,10 @@ class Lms {
     }
   }
 
-  async aiPickModel(def) {
+  async aiPickModel(def, entry) {
     const conf = cfg();
-    const current = conf.get('ai.model') || (def && def.model) || '';
-    const models = await aiListModels();
+    const current = (entry && entry.model) || conf.get('ai.model') || (def && def.model) || '';
+    const models = await aiListModels(entry);
     const items = [];
     if (current) items.push({ label: current, description: 'текущая модель' });
     for (const m of models) {
@@ -1477,13 +1501,272 @@ class Lms {
     return picked.label;
   }
 
+  aiStatusText() {
+    const list = aiEntries();
+    if (!list.length) return 'не настроен';
+    const active = list.find(e => e.id === AI_POOL_ACTIVE) || list[0];
+    const idx = list.indexOf(active) + 1;
+    return (active.label || active.provider) + ' · ' + active.model + ' · ключ ' + aiKeyTail(active.apiKey) +
+      (list.length > 1 ? ' (' + idx + ' из ' + list.length + ')' : '');
+  }
+
+  async aiValidateCode(code) {
+    const problems = aiLint(code);
+    const file = path.join(os.tmpdir(), 'yandex-lms-ai-check.py');
+    try {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, code, 'utf8');
+      const python = cfg().get('pythonPath') || 'python';
+      const res = await this.runProcess(python, ['-m', 'py_compile', file], 15000);
+      if (res.code !== 0) {
+        const out = String(res.out || '').trim().split(/\r?\n/).filter(Boolean).slice(-3).join(' ');
+        if (out && !/no module named|не найден|is not recognized|not found/i.test(out)) {
+          problems.push('не компилируется: ' + out.slice(0, 200));
+        }
+      }
+    } catch (e) { }
+    return { ok: !problems.length, problems };
+  }
+
+  async aiRepairCode(code, problems, statement) {
+    const prompt =
+      'УСЛОВИЕ ЗАДАЧИ:\n' + String(statement || '').slice(0, 6000) + '\n\n' +
+      'КОД, КОТОРЫЙ НАДО ПОЧИНИТЬ:\n```python\n' + code + '\n```\n\n' +
+      'ЧТО НЕ ТАК:\n- ' + problems.join('\n- ') + '\n\n' +
+      this.aiStudentRules() + '\n\n' +
+      'Сохрани логику решения, но убери все нарушения: только материал курса, чтение через input(), вывод через print(). ' +
+      'Ответь ТОЛЬКО кодом в одном блоке ```python, без пояснений.';
+    const text = await aiChat(prompt, this.aiSystemPrompt() + ' Ты — автор эталонных решений курса.', 60000, null, { maxTokens: 1800, temperature: 0 });
+    const m = /```(?:python)?\s*([\s\S]*?)```/i.exec(text);
+    return (m ? m[1] : text).replace(/^\s*```.*$/gm, '').trim();
+  }
+
+  async aiTestEntry(entry) {
+    entry = Object.assign({}, entry, { id: aiEntryId(entry) });
+    const t0 = Date.now();
+    try {
+      const res = await aiChatOnce(entry, 'Ответь одним словом: работает?', 'Отвечай кратко.', 30000, null, { maxTokens: 20, temperature: 0 }, new AbortController());
+      const s = ((Date.now() - t0) / 1000).toFixed(1);
+      aiMarkOk(entry, Date.now() - t0);
+      this.output().appendLine('AI: ' + aiEntryLabel(entry) + ' [' + aiKeyTail(entry.apiKey) + '] — ок за ' + s + ' с: ' + res.text.slice(0, 60));
+      vscode.window.showInformationMessage('LMS: ' + aiEntryLabel(entry) + ' — работает, ' + s + ' с.');
+      return true;
+    } catch (e) {
+      aiMarkFail(entry, e);
+      const msg = String((e && e.message) || e).slice(0, 200);
+      this.output().appendLine('AI: ' + aiEntryLabel(entry) + ' — ошибка: ' + msg);
+      vscode.window.showWarningMessage('LMS: ' + aiEntryLabel(entry) + ' — ' + msg);
+      return false;
+    }
+  }
+
+  async aiTest() {
+    const list = aiEntries();
+    if (!list.length) {
+      vscode.window.showWarningMessage('LMS: ИИ не настроен — добавьте ключ.');
+      return;
+    }
+    const lines = [];
+    for (const e of list) {
+      const t0 = Date.now();
+      try {
+        const res = await aiChatOnce(e, 'Ответь одним словом: работает?', 'Отвечай кратко.', 30000, null, { maxTokens: 20, temperature: 0 }, new AbortController());
+        const ms = Date.now() - t0;
+        aiMarkOk(e, ms);
+        lines.push('✓ ' + aiEntryLabel(e) + ' [' + aiKeyTail(e.apiKey) + '] — ' + (ms / 1000).toFixed(1) + ' с: ' + res.text.slice(0, 40));
+      } catch (err) {
+        aiMarkFail(e, err);
+        lines.push('✗ ' + aiEntryLabel(e) + ' [' + aiKeyTail(e.apiKey) + '] — ' + String((err && err.message) || err).slice(0, 160));
+      }
+    }
+    this.output().appendLine('=== AI: проверка ключей ===\n' + lines.join('\n'));
+    const okCount = lines.filter(l => l.startsWith('✓')).length;
+    vscode.window.showInformationMessage('LMS: ИИ — работает ключей ' + okCount + ' из ' + list.length + '. Подробности в выводе «LMS».');
+    await this.refreshAiPanel();
+  }
+
+  async refreshAiPanel() {
+    if (!this.currentTask) return;
+    try {
+      await this.showTaskPanel(this.detailCache.get(String(this.currentTask.taskId)) || { title: this.currentTask.taskTitle }, null);
+    } catch (e) { }
+  }
+
   async aiSettingsUI() {
+    const list = aiEntries();
+    const items = [
+      { label: '$(key) Ключи и провайдеры', description: list.length ? list.length + ' · ротация по лимитам' : 'не настроено', action: 'keys' },
+      { label: '$(beaker) Проверить все ключи', description: 'замер времени ответа', action: 'test' },
+      { label: '$(symbol-parameter) Сменить модель', description: list[0] ? list[0].model : '', action: 'model' },
+      { label: '$(gear) Быстрая настройка одного провайдера', description: 'провайдер + ключ + модель', action: 'legacy' },
+      { label: '$(sparkle) Автодополнение в редакторе', description: cfg().get('ai.autocomplete') ? 'включено — нажмите, чтобы выключить' : 'выключено — нажмите, чтобы включить', action: 'autocomplete' },
+      { label: '$(check) Самопроверка кода перед вставкой', description: cfg().get('ai.selfCheck') !== false ? 'включена — нажмите, чтобы выключить' : 'выключена — нажмите, чтобы включить', action: 'selfcheck' },
+      { label: '$(rocket) Ускорение: второй ключ параллельно', description: cfg().get('ai.hedge') !== false ? 'включено — нажмите, чтобы выключить' : 'выключено — нажмите, чтобы включить', action: 'hedge' },
+      { label: '$(debug-restart) Сбросить состояние лимитов', description: 'снова пробовать все ключи', action: 'reset' },
+      { label: '$(history) Забыть накопленные ошибки', description: 'память о граблях ученика', action: 'forget' }
+    ];
+    const picked = await vscode.window.showQuickPick(items, { placeHolder: 'ИИ: настройки и ключи', ignoreFocusOut: true });
+    if (!picked) return;
+    const conf = cfg();
+    if (picked.action === 'keys') return this.aiKeysUI();
+    if (picked.action === 'test') return this.aiTest();
+    if (picked.action === 'legacy') return this.aiLegacySettingsUI();
+    if (picked.action === 'forget') return vscode.commands.executeCommand('yandexLms.aiForget');
+    if (picked.action === 'reset') {
+      AI_POOL_STATE = {};
+      aiPersistSoon();
+      vscode.window.showInformationMessage('LMS: состояние лимитов сброшено — все ключи снова доступны.');
+      return this.refreshAiPanel();
+    }
+    if (picked.action === 'autocomplete' || picked.action === 'selfcheck' || picked.action === 'hedge') {
+      const key = picked.action === 'autocomplete' ? 'ai.autocomplete' : (picked.action === 'selfcheck' ? 'ai.selfCheck' : 'ai.hedge');
+      const cur = picked.action === 'autocomplete' ? !!conf.get(key) : conf.get(key) !== false;
+      await conf.update(key, !cur, vscode.ConfigurationTarget.Global);
+      vscode.window.showInformationMessage('LMS: ' + picked.label.replace(/^\$\([^)]+\)\s*/, '') + ' — ' + (!cur ? 'включено' : 'выключено') + '.');
+      return this.refreshAiPanel();
+    }
+    if (picked.action === 'model') {
+      const target = list.length > 1
+        ? await vscode.window.showQuickPick(list.map(e => ({ label: aiEntryLabel(e), entry: e })), { placeHolder: 'Ключ, которому менять модель' })
+        : (list[0] ? { entry: list[0] } : null);
+      if (!target) return;
+      const model = await this.aiPickModel({ model: target.entry.model }, target.entry);
+      if (!model) return;
+      const idx = AI_POOL.findIndex(e => aiEntryId(e) === target.entry.id);
+      if (idx >= 0) AI_POOL[idx].model = model;
+      else AI_POOL.push(Object.assign({}, target.entry, { model }));
+      aiPersistSoon();
+      vscode.window.showInformationMessage('LMS: модель — ' + model + '.');
+      return this.refreshAiPanel();
+    }
+  }
+
+  async aiKeysUI() {
+    for (;;) {
+      const list = aiEntries();
+      const items = [
+        { label: '$(add) Добавить ключ или провайдера', description: 'ещё один API для ротации', action: 'add' },
+        { label: '$(beaker) Проверить все ключи', description: list.length ? String(list.length) : '', action: 'test' },
+        { label: '$(debug-restart) Сбросить лимиты', description: '', action: 'reset' },
+        { label: '$(gear) Обычные настройки', description: '', action: 'settings' }
+      ];
+      for (const e of list) {
+        const cd = aiCooldownLeft(e);
+        const st = AI_POOL_STATE[e.id] || {};
+        items.push({
+          label: '$(key) ' + aiEntryLabel(e) + (e.id === AI_POOL_ACTIVE ? '  ⭐' : ''),
+          description: aiKeyTail(e.apiKey) + (cd ? ' · лимит ещё ' + Math.ceil(cd / 60000) + ' мин' : (st.ms ? ' · ' + (st.ms / 1000).toFixed(1) + ' с' : '')),
+          detail: cd ? (st.lastError || 'временно недоступен') : 'готов',
+          action: 'entry',
+          entry: e
+        });
+      }
+      const picked = await vscode.window.showQuickPick(items, {
+        placeHolder: 'ИИ: ключи и провайдеры — выберите ключ для действий',
+        matchOnDescription: true,
+        ignoreFocusOut: true
+      });
+      if (!picked) return;
+      if (picked.action === 'add') { await this.aiAddKey(); continue; }
+      if (picked.action === 'test') { await this.aiTest(); continue; }
+      if (picked.action === 'reset') {
+        AI_POOL_STATE = {};
+        aiPersistSoon();
+        vscode.window.showInformationMessage('LMS: лимиты сброшены.');
+        continue;
+      }
+      if (picked.action === 'settings') { await this.aiSettingsUI(); continue; }
+      if (picked.action === 'entry') { await this.aiKeyActions(picked.entry); continue; }
+      return;
+    }
+  }
+
+  async aiKeyActions(entry) {
+    const items = [
+      { label: '$(star) Сделать основным', description: 'пробовать первым', action: 'primary' },
+      { label: '$(beaker) Проверить этот ключ', description: '', action: 'test' },
+      { label: '$(edit) Заменить ключ', description: aiKeyTail(entry.apiKey), action: 'key' },
+      { label: '$(symbol-parameter) Сменить модель', description: entry.model, action: 'model' },
+      { label: '$(trash) Удалить', description: '', action: 'delete' }
+    ];
+    const picked = await vscode.window.showQuickPick(items, { placeHolder: aiEntryLabel(entry), ignoreFocusOut: true });
+    if (!picked) return;
+    const idx = AI_POOL.findIndex(e => aiEntryId(e) === entry.id);
+    if (picked.action === 'primary') {
+      AI_POOL_ACTIVE = entry.id;
+      if (idx > 0) AI_POOL.unshift(AI_POOL.splice(idx, 1)[0]);
+      aiPersistSoon();
+      vscode.window.showInformationMessage('LMS: основной ключ — ' + aiEntryLabel(entry) + '.');
+    } else if (picked.action === 'test') {
+      await this.aiTestEntry(entry);
+    } else if (picked.action === 'key') {
+      const key = await vscode.window.showInputBox({ prompt: 'Новый API-ключ для ' + aiEntryLabel(entry), password: true, ignoreFocusOut: true });
+      if (!key) return;
+      const next = Object.assign({}, entry, { apiKey: key.trim() });
+      if (idx >= 0) AI_POOL[idx] = next;
+      else AI_POOL.push(next);
+      delete AI_POOL_STATE[entry.id];
+      aiPersistSoon();
+      await this.aiTestEntry(next);
+    } else if (picked.action === 'model') {
+      const model = await this.aiPickModel({ model: entry.model }, entry);
+      if (!model) return;
+      if (idx >= 0) AI_POOL[idx].model = model;
+      else AI_POOL.push(Object.assign({}, entry, { model }));
+      aiPersistSoon();
+    } else if (picked.action === 'delete') {
+      const ok = await vscode.window.showWarningMessage('Удалить ключ ' + aiEntryLabel(entry) + '?', { modal: true }, 'Удалить');
+      if (ok !== 'Удалить') return;
+      AI_POOL = AI_POOL.filter(e => aiEntryId(e) !== entry.id);
+      delete AI_POOL_STATE[entry.id];
+      aiPersistSoon();
+    }
+    await this.refreshAiPanel();
+  }
+
+  async aiAddKey() {
+    aiPoolEnsureSeed();
+    const items = Object.keys(AI_PROVIDERS).filter(k => k !== 'none').map(k => ({
+      label: AI_PROVIDERS[k].label,
+      description: k,
+      detail: AI_PROVIDERS[k].baseUrl || 'адрес указывается вручную'
+    }));
+    const picked = await vscode.window.showQuickPick(items, { placeHolder: 'Провайдер нового ключа', ignoreFocusOut: true });
+    if (!picked) return;
+    const provider = picked.description;
+    const def = AI_PROVIDERS[provider] || {};
+    const key = await vscode.window.showInputBox({
+      prompt: provider === 'ollama' ? 'API-ключ (можно пустой для локальной модели)' : 'API-ключ ' + def.label,
+      password: true,
+      ignoreFocusOut: true
+    });
+    if (key === undefined) return;
+    const draft = { provider, baseUrl: def.baseUrl || '', model: def.model || '', apiKey: key.trim(), label: def.label };
+    if (provider === 'custom' || !def.baseUrl) {
+      const baseUrl = await vscode.window.showInputBox({
+        prompt: 'Базовый URL API (например https://openrouter.ai/api/v1)',
+        value: draft.baseUrl,
+        ignoreFocusOut: true
+      });
+      if (!baseUrl) return;
+      draft.baseUrl = baseUrl.trim().replace(/\/+$/, '');
+    }
+    const model = await this.aiPickModel({ model: draft.model }, draft);
+    if (!model) return;
+    draft.model = model;
+    AI_POOL.push(draft);
+    aiPersistSoon();
+    await this.aiTestEntry(draft);
+    await this.refreshAiPanel();
+  }
+
+  async aiLegacySettingsUI() {
     const items = Object.keys(AI_PROVIDERS).map(k => ({
       label: k === 'none' ? 'Выключено' : AI_PROVIDERS[k].label,
       description: k,
       detail: AI_PROVIDERS[k].baseUrl || 'адрес указывается вручную'
     }));
-    const picked = await vscode.window.showQuickPick(items, { placeHolder: 'Выберите провайдера ИИ' });
+    const picked = await vscode.window.showQuickPick(items, { placeHolder: 'Выберите провайдера ИИ', ignoreFocusOut: true });
     if (!picked) return;
     const provider = picked.description;
     const conf = cfg();
@@ -1511,27 +1794,12 @@ class Lms {
         await conf.update('ai.baseUrl', baseUrl, vscode.ConfigurationTarget.Global);
       }
     }
+    AI_POOL = [];
+    aiPoolEnsureSeed();
+    aiPersistSoon();
     const c = aiConfig();
     vscode.window.showInformationMessage('LMS: провайдер ИИ — ' + c.label + ' (' + c.model + ').');
-    if (this.currentTask) {
-      await this.showTaskPanel(this.detailCache.get(String(this.currentTask.taskId)) || { title: this.currentTask.taskTitle }, null);
-    }
-  }
-
-  async aiTest() {
-    const c = aiConfig();
-    if (!c.provider || c.provider === 'none') {
-      vscode.window.showWarningMessage('LMS: ИИ не настроен.');
-      return;
-    }
-    vscode.window.showInformationMessage('LMS: проверяю подключение к ' + c.label + ' (' + c.model + ')…');
-    const t0 = Date.now();
-    try {
-      const res = await aiChat('Ответь одним словом: работает?', 'Отвечай кратко.', 25000);
-      vscode.window.showInformationMessage('LMS: ИИ отвечает за ' + ((Date.now() - t0) / 1000).toFixed(1) + ' с: ' + res.slice(0, 60));
-    } catch (e) {
-      vscode.window.showErrorMessage('LMS: ИИ недоступен: ' + (e.message || e));
-    }
+    await this.refreshAiPanel();
   }
 
   viewDir() {
@@ -1961,10 +2229,9 @@ class Lms {
       vscode.window.showWarningMessage('LMS: сначала откройте задание.');
       return;
     }
-    const c = aiConfig();
-    if (!c.provider || c.provider === 'none' || (!c.apiKey && c.provider !== 'ollama')) {
-      const go = await vscode.window.showInformationMessage('ИИ не настроен. Настроить сейчас?', 'Настроить');
-      if (go === 'Настроить') await this.aiSettingsUI();
+    if (!aiHasConfig()) {
+      const go = await vscode.window.showInformationMessage('ИИ не настроен. Добавить провайдера и ключ сейчас?', 'Настроить');
+      if (go === 'Настроить') await this.aiKeysUI();
       return;
     }
     const code = this.aiCurrentCode();
@@ -1998,12 +2265,22 @@ class Lms {
         'Не объясняй ошибку в посте — просто дай рабочий код.\n' +
         'В конце ответа (после блока кода) добавь строку: УРОК: <одно предложение — в чём была ошибка и как её избежать в следующий раз>.\n' +
         'Ответь ТОЛЬКО кодом в одном блоке ```python ... ``` и этой строкой.';
-      text = await aiChat(prompt, this.aiSystemPrompt() + ' Ты — автор эталонных решений курса, исправляешь решения учеников.', 90000, this.statementImages);
+      text = await aiChat(prompt, this.aiSystemPrompt() + ' Ты — автор эталонных решений курса, исправляешь решения учеников.', 90000, this.statementImages, { maxTokens: 1800, temperature: 0.15 });
       aiLog({ event: 'ai-fix-response', raw: String(text).slice(0, 4000) });
       const sp = this.splitLesson(text);
       const mm = /```(?:python)?\s*([\s\S]*?)```/i.exec(sp.text);
-      const fixed = (mm ? mm[1] : sp.text).replace(/^\s*```.*$/gm, '').trim();
+      let fixed = (mm ? mm[1] : sp.text).replace(/^\s*```.*$/gm, '').trim();
       if (!fixed) throw new Error('Модель вернула пустой код.');
+      if (cfg().get('ai.selfCheck') !== false) {
+        for (let round = 0; round < 2; round++) {
+          const v = await this.aiValidateCode(fixed);
+          if (v.ok) break;
+          aiLog({ event: 'fix-selfcheck', round: round + 1, problems: v.problems });
+          const again = await this.aiRepairCode(fixed, v.problems, statement);
+          if (!again || again === fixed) break;
+          fixed = again;
+        }
+      }
       await this.aiFileWrite(fixed + '\n');
       if (sp.lesson) await this.aiRememberLesson(sp.lesson);
       this.aiHints = 'ИИ исправил код по ошибке проверки. Новый код — в файле.';
@@ -2257,10 +2534,9 @@ class Lms {
       vscode.window.showWarningMessage('LMS: это не задание с вариантами ответа.');
       return;
     }
-    const c = aiConfig();
-    if (!c.provider || c.provider === 'none' || (!c.apiKey && c.provider !== 'ollama')) {
-      const go = await vscode.window.showInformationMessage('ИИ не настроен. Настроить сейчас?', 'Настроить');
-      if (go === 'Настроить') await this.aiSettingsUI();
+    if (!aiHasConfig()) {
+      const go = await vscode.window.showInformationMessage('ИИ не настроен. Добавить провайдера и ключ сейчас?', 'Настроить');
+      if (go === 'Настроить') await this.aiKeysUI();
       return;
     }
     const question = t.markersQuestion || '';
@@ -2290,7 +2566,7 @@ class Lms {
         '\n' + this.aiLessonsText() +
         'Определи правильный вариант(ы). Ответь ТОЛЬКО JSON без пояснений: {"answers":{"<marker id>":"<value>"}}\n' +
         'Ученик прошёл только базовый курс (строки, циклы, условия) — считай результат вручную, как это делал бы новичок.';
-      const raw = await aiChat(prompt, this.aiSystemPrompt() + ' Ты — эксперт по основам Python и по заданиям этого курса.', 90000, this.statementImages);
+      const raw = await aiChat(prompt, this.aiSystemPrompt() + ' Ты — эксперт по основам Python и по заданиям этого курса.', 60000, this.statementImages, { maxTokens: 400, temperature: 0 });
       const m = /\{[\s\S]*\}/.exec(raw);
       const json = JSON.parse(m ? m[0] : raw);
       const answers = pick(json, 'answers') || json;
@@ -3305,10 +3581,7 @@ class AiAutocomplete {
     const t = lms && lms.currentTask;
     if (!t || !t.filePath) return undefined;
     if (document.uri.fsPath !== t.filePath) return undefined;
-    const c = aiConfig();
-    if (!c.provider || c.provider === 'none') return undefined;
-    if (!c.model) return undefined;
-    if (!c.apiKey && c.provider !== 'ollama') return undefined;
+    if (!aiHasConfig()) return undefined;
 
     const text = document.getText();
     const upto = text.slice(0, document.offsetAt(position));
@@ -3355,7 +3628,7 @@ class AiAutocomplete {
       'Напиши ТОЛЬКО следующую строку кода (или 1-2 строки), которая продолжает решение по этому условию. ' +
       'Никаких пояснений, никакого markdown, никаких ``` — только код, готовый к вставке с правильным отступом. ' +
       'Если по условию для следующей строки нужно вывести результат — выведи его.';
-    const raw = await aiChat(prompt, 'Ты — учитель Python курса Яндекс LMS. Ты даёшь только код, без пояснений.', 25000);
+    const raw = await aiChat(prompt, 'Ты — учитель Python курса Яндекс LMS. Ты даёшь только код, без пояснений.', 15000, null, { maxTokens: 80, temperature: 0, hedge: false });
     let s = String(raw || '').trim();
     s = s.replace(/^```(?:python)?/i, '').replace(/```\s*$/, '').trim();
     s = s.replace(/^(?:Вот|Ответ|Код|Next)[^\n:]*:\s*/i, '');
@@ -3616,96 +3889,303 @@ function aiConfig() {
   };
 }
 
-async function aiChat(prompt, system, timeoutMs, images) {
+// ─── Пул ключей ИИ: несколько API-ключей/провайдеров, ротация по лимитам ───
+const AI_POOL_SECRET = 'yandexLms.aiPool';
+let AI_POOL = [];
+let AI_POOL_STATE = {};
+let AI_POOL_ACTIVE = null;
+let AI_POOL_PERSIST = null;
+let AI_POOL_SAVE_TIMER = null;
+
+function aiEntryId(e) {
+  return crypto.createHash('sha1').update([e.provider || '', e.baseUrl || '', e.model || '', e.apiKey || ''].join('|')).digest('hex').slice(0, 12);
+}
+
+function aiEntryLabel(e) {
+  const p = AI_PROVIDERS[e.provider] || {};
+  return (e.label || p.label || e.provider || '?') + ' · ' + (e.model || '?');
+}
+
+function aiKeyTail(key) {
+  const s = String(key || '');
+  return s ? '••••' + s.slice(-4) : 'локальная';
+}
+
+function aiLegacyEntry() {
   const c = aiConfig();
-  if (!c.provider || c.provider === 'none') throw new Error('ИИ не настроен. Выполните «Yandex LMS: AI: настройки провайдера».');
-  if (!c.baseUrl) throw new Error('Не задан адрес API (yandexLms.ai.baseUrl).');
-  if (!c.model) throw new Error('Не указана модель (yandexLms.ai.model).');
+  if (!c.provider || c.provider === 'none' || !c.baseUrl || !c.model) return null;
+  return { provider: c.provider, baseUrl: c.baseUrl, model: c.model, apiKey: c.apiKey, label: c.label };
+}
+
+function aiEntries() {
+  const src = AI_POOL.length ? AI_POOL : [aiLegacyEntry()].filter(Boolean);
+  const out = [];
+  for (const e of src) {
+    if (!e || !e.baseUrl || !e.model) continue;
+    if (!e.apiKey && e.provider !== 'ollama') continue;
+    out.push(Object.assign({}, e, { id: aiEntryId(e) }));
+  }
+  return out;
+}
+
+function aiHasConfig() {
+  return aiEntries().length > 0;
+}
+
+function aiCooldownLeft(e) {
+  const st = AI_POOL_STATE[e.id];
+  if (!st || !st.until) return 0;
+  return Math.max(0, st.until - Date.now());
+}
+
+function aiOrdered() {
+  const ready = [];
+  const cooling = [];
+  for (const e of aiEntries()) (aiCooldownLeft(e) > 0 ? cooling : ready).push(e);
+  ready.sort((a, b) => ((AI_POOL_STATE[a.id] || {}).ms || 4000) - ((AI_POOL_STATE[b.id] || {}).ms || 4000));
+  cooling.sort((a, b) => aiCooldownLeft(a) - aiCooldownLeft(b));
+  const list = ready.concat(cooling);
+  const i = list.findIndex(e => e.id === AI_POOL_ACTIVE);
+  if (i > 0) list.unshift(list.splice(i, 1)[0]);
+  return list;
+}
+
+function aiPersistSoon() {
+  if (!AI_POOL_PERSIST) return;
+  if (AI_POOL_SAVE_TIMER) clearTimeout(AI_POOL_SAVE_TIMER);
+  AI_POOL_SAVE_TIMER = setTimeout(() => {
+    AI_POOL_SAVE_TIMER = null;
+    try { AI_POOL_PERSIST(JSON.stringify({ entries: AI_POOL, state: AI_POOL_STATE, active: AI_POOL_ACTIVE })); } catch (e) { }
+  }, 300);
+}
+
+function aiMarkOk(entry, ms) {
+  const st = AI_POOL_STATE[entry.id] = AI_POOL_STATE[entry.id] || {};
+  st.fails = 0;
+  st.until = 0;
+  st.lastOk = Date.now();
+  if (ms) st.ms = st.ms ? Math.round(st.ms * 0.65 + ms * 0.35) : ms;
+  AI_POOL_ACTIVE = entry.id;
+  aiPersistSoon();
+}
+
+function aiMarkFail(entry, err) {
+  const st = AI_POOL_STATE[entry.id] = AI_POOL_STATE[entry.id] || {};
+  const status = Number((err && err.status) || 0);
+  st.fails = (st.fails || 0) + 1;
+  st.lastError = String((err && err.message) || err || '').slice(0, 300);
+  st.lastFail = Date.now();
+  let ms = 60 * 1000;
+  if (status === 401 || status === 403) ms = 12 * 60 * 60 * 1000;
+  else if (status === 402 || status === 429) ms = Math.max(60 * 1000, Number(err && err.retryAfterMs) || 5 * 60 * 1000);
+  else if (status >= 500) ms = 90 * 1000;
+  else if (status === 400 || status === 404 || status === 422) ms = 30 * 1000;
+  st.until = Date.now() + ms;
+  aiPersistSoon();
+}
+
+function aiError(message, extra) {
+  const e = new Error(message);
+  if (extra) Object.assign(e, extra);
+  return e;
+}
+
+function aiPoolEnsureSeed() {
+  if (AI_POOL.length) return;
+  const e = aiLegacyEntry();
+  if (e) AI_POOL.push(e);
+}
+
+async function aiChatOnce(entry, prompt, system, timeoutMs, images, opts, ctl) {
+  const o = opts || {};
   const headers = { 'Content-Type': 'application/json' };
-  if (c.apiKey) headers['Authorization'] = 'Bearer ' + c.apiKey;
-  if (c.provider === 'openrouter') {
+  if (entry.apiKey) headers['Authorization'] = 'Bearer ' + entry.apiKey;
+  if (entry.provider === 'openrouter') {
     headers['HTTP-Referer'] = 'https://lms.yandex.ru';
     headers['X-Title'] = 'Yandex LMS for VS Code';
   }
+  const temperature = o.temperature !== undefined ? o.temperature : Number(cfg().get('ai.temperature') || 0.2);
+  const maxTokens = Number(o.maxTokens || 0);
   const buildBody = (withImages) => {
-    const userContent = withImages && images && images.length
-      ? [{ type: 'text', text: prompt }].concat(images.slice(0, 2).map(u => ({ type: 'image_url', image_url: { url: u } })))
-      : prompt;
-    return {
-      model: c.model,
+    const body = {
+      model: entry.model,
       messages: [
         { role: 'system', content: system || 'Ты — наставник по Python.' },
-        { role: 'user', content: userContent }
+        {
+          role: 'user',
+          content: withImages && images && images.length
+            ? [{ type: 'text', text: prompt }].concat(images.slice(0, 2).map(u => ({ type: 'image_url', image_url: { url: u } })))
+            : prompt
+        }
       ],
-      temperature: c.temperature
+      temperature
     };
+    if (maxTokens > 0) body.max_tokens = maxTokens;
+    return body;
   };
-  const limit = timeoutMs || 90000;
+  const limit = Math.max(4000, Number(timeoutMs) || 90000);
+  const controller = ctl || new AbortController();
+  const timer = setTimeout(() => { try { controller.abort(); } catch (e) { } }, limit);
   const t0 = Date.now();
-  let res;
   let useImages = !!(images && images.length);
-  const send = async () => {
-    return await fetch(c.baseUrl + '/chat/completions', {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(buildBody(useImages)),
-      signal: AbortSignal.timeout(limit)
-    });
-  };
+  const send = () => fetch(entry.baseUrl + '/chat/completions', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(buildBody(useImages)),
+    signal: controller.signal
+  });
+  let res;
   try {
     res = await send();
   } catch (e) {
+    clearTimeout(timer);
     const ms = Date.now() - t0;
-    aiLog({ event: 'http-error', model: c.model, baseUrl: c.baseUrl, error: String(e.name || '') + ' ' + String(e.message || e), ms });
-    if (e.name === 'TimeoutError' || /timeout|abort/i.test(String(e.message || ''))) {
-      throw new Error('модель «' + c.model + '» не ответила за ' + Math.round(limit / 1000) + ' с. Бесплатные модели OpenRouter часто стоят в очереди — выбери другую модель (AI: настройки → модель) или провайдера Mistral.');
+    aiLog({ event: 'http-error', entry: aiEntryLabel(entry), key: aiKeyTail(entry.apiKey), error: String(e.name || '') + ' ' + String(e.message || e), ms });
+    if (e.name === 'AbortError' || /abort|timeout/i.test(String(e.message || ''))) {
+      throw aiError('«' + entry.model + '» не ответила за ' + Math.round(limit / 1000) + ' с', { timeout: true, retryable: true });
     }
-    throw new Error('не удалось соединиться с ' + c.baseUrl + ' (' + (e.message || e) + ')');
+    throw aiError('нет связи с ' + entry.baseUrl + ' (' + (e.message || e) + ')', { retryable: true });
   }
   let text = await res.text();
   if (!res.ok && useImages) {
-    // модель не умеет картинки — повторяем без них
-    aiLog({ event: 'images-retry', model: c.model, status: res.status, body: text.slice(0, 300) });
+    aiLog({ event: 'images-retry', entry: aiEntryLabel(entry), status: res.status });
     useImages = false;
     try {
       res = await send();
       text = await res.text();
     } catch (e) { }
   }
+  clearTimeout(timer);
   const ms = Date.now() - t0;
-  aiLog({ event: 'http', model: c.model, status: res.status, ms, withImages: useImages });
   if (!res.ok) {
+    const retryAfterS = Number(res.headers.get('retry-after') || 0);
     let msg = text.slice(0, 300);
     try {
       const j2 = JSON.parse(text);
       msg = (j2.error && (j2.error.message || j2.error)) || j2.message || msg;
-      if (j2.error && j2.error.code === 429) msg = 'модель перегружена (429). Попробуй другую модель или подожди.';
-      if (res.status === 401) msg = 'неверный API-ключ (' + c.label + ').';
     } catch (e) { }
-    throw new Error('API ' + res.status + ': ' + msg);
+    if (res.status === 401) msg = 'неверный API-ключ';
+    aiLog({ event: 'http-fail', entry: aiEntryLabel(entry), key: aiKeyTail(entry.apiKey), status: res.status, ms, msg: String(msg).slice(0, 200) });
+    throw aiError('API ' + res.status + ': ' + msg, { status: res.status, retryAfterMs: retryAfterS > 0 ? retryAfterS * 1000 : 0, retryable: true });
   }
+  aiLog({ event: 'http', entry: aiEntryLabel(entry), key: aiKeyTail(entry.apiKey), status: res.status, ms, withImages: useImages });
   let json;
-  try { json = JSON.parse(text); } catch (e) { throw new Error('Ответ API не JSON: ' + text.slice(0, 200)); }
+  try { json = JSON.parse(text); } catch (e) { throw aiError('ответ API не JSON: ' + text.slice(0, 200), { retryable: true }); }
   const msg = json.choices && json.choices[0] && json.choices[0].message;
   const content = msg ? msg.content : (json.choices && json.choices[0] ? json.choices[0].text : '');
-  if (!content) throw new Error('Модель вернула пустой ответ.');
-  return String(content);
+  if (!content) throw aiError('модель вернула пустой ответ', { retryable: true });
+  return { text: String(content), ms };
 }
 
-async function aiListModels() {
-  const c = aiConfig();
-  if (!c.baseUrl) return [];
-  const headers = {};
-  if (c.apiKey) headers['Authorization'] = 'Bearer ' + c.apiKey;
+async function aiChat(prompt, system, timeoutMs, images, opts) {
+  const o = opts || {};
+  const all = aiOrdered();
+  if (!all.length) throw new Error('ИИ не настроен: добавьте ключ — «LMS: AI — ключи и лимиты».');
+  const budget = Math.max(5000, Number(timeoutMs) || 90000);
+  const deadline = Date.now() + budget;
+  const maxTries = Math.max(1, Math.min(all.length, Number(cfg().get('ai.retries') || 3)));
+  const list = all.slice(0, maxTries);
+  const hedge = cfg().get('ai.hedge') !== false && o.hedge !== false && list.length > 1;
+  const hedgeDelay = Math.max(1500, Number(cfg().get('ai.hedgeDelay') || 7000));
+
+  const controllers = new Set();
+  const inflight = [];
+  const errors = [];
+  let launched = 0;
+  let settled = false;
+  let hedgeTimer = null;
+
+  const launch = () => {
+    if (settled || launched >= list.length) return false;
+    const entry = list[launched++];
+    const ctl = new AbortController();
+    controllers.add(ctl);
+    const remain = Math.max(5000, deadline - Date.now());
+    const p = aiChatOnce(entry, prompt, system, remain, images, o, ctl)
+      .then(r => ({ ok: true, entry, text: r.text, ms: r.ms }))
+      .catch(err => ({ ok: false, entry, err }));
+    inflight.push(p);
+    return true;
+  };
+
+  const abortAll = () => {
+    for (const ctl of controllers) { try { ctl.abort(); } catch (e) { } }
+  };
+
+  if (hedge) hedgeTimer = setTimeout(() => { hedgeTimer = null; if (!settled) launch(); }, hedgeDelay);
+  launch();
+
   try {
-    const res = await fetch(c.baseUrl + '/models', { headers, signal: AbortSignal.timeout(15000) });
+    while (inflight.length) {
+      const r = await Promise.race(inflight);
+      const i = inflight.indexOf(r);
+      if (i >= 0) inflight.splice(i, 1);
+      if (r.ok) {
+        settled = true;
+        aiMarkOk(r.entry, r.ms);
+        abortAll();
+        return r.text;
+      }
+      aiMarkFail(r.entry, r.err);
+      errors.push(r);
+      if (Date.now() >= deadline) break;
+      if (!inflight.length && !launch()) break;
+    }
+  } finally {
+    settled = true;
+    if (hedgeTimer) { clearTimeout(hedgeTimer); hedgeTimer = null; }
+    abortAll();
+  }
+
+  const lines = errors.map(x => {
+    const st = x.err && x.err.status ? 'HTTP ' + x.err.status : (x.err && x.err.timeout ? 'таймаут' : 'сбой');
+    return aiEntryLabel(x.entry) + ' [' + aiKeyTail(x.entry.apiKey) + '] — ' + st + ': ' + String((x.err && x.err.message) || x.err || '').slice(0, 140);
+  });
+  const has429 = errors.some(x => x.err && (x.err.status === 402 || x.err.status === 429));
+  const tail = has429
+    ? '\nВсе ключи упёрлись в лимиты. Добавьте ещё один ключ (кнопка «AI: ключи») или подождите — лимиты сбрасываются автоматически.'
+    : '';
+  throw new Error('ИИ не ответил.\n' + lines.join('\n') + tail);
+}
+
+async function aiListModels(entry) {
+  const e = entry || aiEntries()[0];
+  if (!e || !e.baseUrl) return [];
+  const headers = {};
+  if (e.apiKey) headers['Authorization'] = 'Bearer ' + e.apiKey;
+  try {
+    const res = await fetch(e.baseUrl + '/models', { headers, signal: AbortSignal.timeout(15000) });
     if (!res.ok) return [];
     const j = JSON.parse(await res.text());
     const arr = Array.isArray(j.data) ? j.data : (Array.isArray(j.models) ? j.models : []);
     return arr.map(m => (typeof m === 'string' ? m : (m.id || m.name))).filter(Boolean);
-  } catch (e) {
+  } catch (e2) {
     return [];
   }
+}
+
+// Конструкции, которые проверка курса не принимает: ловим до отправки и правим.
+const AI_FORBIDDEN = [
+  { re: /^[ \t]*import[ \t]+/m, msg: 'import запрещён' },
+  { re: /^[ \t]*from[ \t]+[\w.]+[ \t]+import[ \t]+/m, msg: 'from … import запрещён' },
+  { re: /\bclass[ \t]+[A-Za-z_]\w*/m, msg: 'классы запрещены' },
+  { re: /^[ \t]*try[ \t]*:/m, msg: 'try/except запрещён' },
+  { re: /\bexcept\b/, msg: 'except запрещён' },
+  { re: /\blambda\b/, msg: 'lambda запрещена' },
+  { re: /\[[^\]\n]*\bfor\b[^\]\n]*\]/, msg: 'списковое включение запрещено' },
+  { re: /\{[^}\n]*\bfor\b[^}\n]*\}/, msg: 'словарное/множественное включение запрещено' },
+  { re: /\bf["']/, msg: 'f-строки запрещены' },
+  { re: /\*\*/, msg: 'возведение в степень через ** запрещено' },
+  { re: /\b(async|await|yield|nonlocal|global)\b/, msg: 'async/await/yield/nonlocal/global запрещены' }
+];
+
+function aiLint(code) {
+  const src = String(code || '');
+  const out = [];
+  for (const f of AI_FORBIDDEN) {
+    if (f.re.test(src) && out.indexOf(f.msg) < 0) out.push(f.msg);
+  }
+  return out;
 }
 
 function aiExtractJson(text) {
@@ -4055,6 +4535,17 @@ async function activate(context) {
   } catch (e) { }
 
   context.subscriptions.push(lms.statusBar, lms.taskStatusBar, lms.tree && { dispose: () => { } });
+  // ИИ: пул ключей (несколько API, ротация по лимитам) — ключи в SecretStorage
+  try {
+    const raw = await context.secrets.get(AI_POOL_SECRET);
+    if (raw) {
+      const j = JSON.parse(raw);
+      AI_POOL = Array.isArray(j.entries) ? j.entries : [];
+      AI_POOL_STATE = j.state || {};
+      AI_POOL_ACTIVE = j.active || null;
+    }
+  } catch (e) { }
+  AI_POOL_PERSIST = (json) => context.secrets.store(AI_POOL_SECRET, json);
   // раз в сессию сканируем задания на картинки (фоном)
   setTimeout(() => { lms.autoScan = true; lms.scanImages().catch(() => { }); }, 8000);
   try { context.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider('lms', lms.docProvider)); } catch (e) { }
@@ -4293,6 +4784,7 @@ async function activate(context) {
       vscode.window.showInformationMessage('LMS: память ошибок очищена.');
     }),
     vscode.commands.registerCommand('yandexLms.aiClear', async (node) => { if (await lms.selectNode(node)) return; await lms.aiClear(); }),
+    vscode.commands.registerCommand('yandexLms.aiKeys', async () => { await lms.aiKeysUI(); }),
     vscode.commands.registerCommand('yandexLms.aiSettings', async () => { await lms.aiSettingsUI(); }),
     vscode.commands.registerCommand('yandexLms.aiTest', async () => { await lms.aiTest(); }),
 

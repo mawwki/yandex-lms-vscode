@@ -2,7 +2,7 @@
   "name": "yandex-lms",
   "displayName": "Яндекс LMS",
   "description": "Полный доступ к LMS Яндекса (lms.yandex.ru) внутри VS Code: условие слева, код справа, отправка решения одной клавишей",
-  "version": "1.3.6",
+  "version": "1.4.0",
   "publisher": "local",
   "license": "MIT",
   "engines": {
@@ -107,6 +107,11 @@
       {
         "command": "yandexLms.aiSettings",
         "title": "LMS: AI — настройки провайдера",
+        "category": "Yandex LMS"
+      },
+      {
+        "command": "yandexLms.aiKeys",
+        "title": "LMS: AI — ключи и лимиты (несколько API)",
         "category": "Yandex LMS"
       },
       {
@@ -242,6 +247,9 @@
         },
         {
           "command": "yandexLms.aiSettings"
+        },
+        {
+          "command": "yandexLms.aiKeys"
         },
         {
           "command": "yandexLms.aiTest"
@@ -431,6 +439,26 @@
           "type": "number",
           "default": 12,
           "description": "Максимум запросов к ИИ в минуту для автодополнения"
+        },
+        "yandexLms.ai.selfCheck": {
+          "type": "boolean",
+          "default": true,
+          "description": "Самопроверка кода ИИ перед вставкой: запрещённые в курсе конструкции и компиляция Python, с автоисправлением"
+        },
+        "yandexLms.ai.hedge": {
+          "type": "boolean",
+          "default": true,
+          "description": "Ускорение: если первый ключ/модель тормозит, параллельно запрашивать следующий (кто ответит первым — тот и используется)"
+        },
+        "yandexLms.ai.hedgeDelay": {
+          "type": "number",
+          "default": 7000,
+          "description": "Через сколько миллисекунд ожидания запускать параллельный запрос ко второму ключу"
+        },
+        "yandexLms.ai.retries": {
+          "type": "number",
+          "default": 3,
+          "description": "Сколько ключей из пула пробовать за один запрос, прежде чем сдаться"
         }
       }
     },
