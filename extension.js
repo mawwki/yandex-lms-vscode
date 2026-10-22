@@ -4032,6 +4032,17 @@ async function welcomeWebview(context) {
   });
 }
 
+async function closeAllTabs() {
+  try { await vscode.workspace.saveAll(false); } catch (e) { }
+  const tabs = [];
+  for (const group of vscode.window.tabGroups.all) tabs.push(...group.tabs);
+  if (!tabs.length) return;
+  let closed = false;
+  try { closed = await vscode.window.tabGroups.close(tabs, true); } catch (e) { closed = false; }
+  if (closed) return;
+  try { await vscode.commands.executeCommand('workbench.action.closeAllEditors'); } catch (e) { }
+}
+
 async function activate(context) {
   const lms = new Lms(context);
   await lms.init();
@@ -4055,14 +4066,11 @@ async function activate(context) {
   const lmsView = vscode.window.createTreeView('yandexLms.tree', { treeDataProvider: lms.tree, showCollapseAll: true });
   context.subscriptions.push(lmsView);
   // При открытии панели LMS (клик по иконке) закрываем все вкладки:
-  // приветствие, открытые файлы и т.п. Несохранённые файлы не трогаем.
+  // приветствие, открытые файлы и т.п. Перед закрытием сохраняем изменения,
+  // чтобы ничего не потерять (dirty-вкладки иначе не закрываются).
   context.subscriptions.push(lmsView.onDidChangeVisibility(e => {
     if (!e.visible) return;
-    for (const group of vscode.window.tabGroups.all) {
-      const tabs = group.tabs.filter(tab => !tab.isDirty);
-      if (!tabs.length) continue;
-      Promise.resolve(vscode.window.tabGroups.close(tabs, true)).catch(() => { });
-    }
+    closeAllTabs().catch(() => { });
   }));
   context.subscriptions.push(
     vscode.commands.registerCommand('yandexLms.login', async () => {
