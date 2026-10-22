@@ -86,33 +86,28 @@ function webviewLog(event, data) {
   } catch (e) { }
 }
 
-function cleanupServiceWorkerState() {
-  // Испорченное состояние service worker в профиле VS Code ломает ВСЕ webview
-  // (и встроенные расширения тоже): «Could not register service worker: InvalidStateError».
-  const out = [];
-  const roots = [];
-  if (process.platform === 'win32') {
-    roots.push(path.join(os.homedir(), 'AppData', 'Roaming', 'Code'));
-    roots.push(path.join(os.homedir(), 'AppData', 'Roaming', 'Code - Insiders'));
-  } else if (process.platform === 'darwin') {
-    roots.push(path.join(os.homedir(), 'Library', 'Application Support', 'Code'));
-  } else {
-    roots.push(path.join(os.homedir(), '.config', 'Code'));
-  }
-  for (const root of roots) {
-    for (const d of ['Service Worker', 'Code Cache']) {
-      const p = path.join(root, d);
-      try {
-        if (!fs.existsSync(p)) continue;
-        fs.rmSync(p, { recursive: true, force: true });
-        out.push(p + ' — удалено');
-      } catch (e) {
-        out.push(p + ' — не удалось: ' + (e.message || e));
-      }
-    }
-  }
-  webviewLog('sw-cleanup', { result: out });
-  return out;
+// Кэш service worker чинится ТОЛЬКО при закрытом VS Code. Пишем cmd-скрипт,
+// который дожидается выхода, чистит папки профиля и запускает VS Code заново.
+function scheduleWebviewRepair() {
+  const dir = path.join(os.tmpdir(), 'yandex-lms-diag');
+  try { fs.mkdirSync(dir, { recursive: true }); } catch (e) { }
+  const file = path.join(dir, 'fix-webview.cmd');
+  const exe = process.execPath;
+  const body = [
+    '@echo off',
+    'timeout /t 3 /nobreak >nul',
+    'taskkill /IM Code.exe /F >nul 2>&1',
+    'timeout /t 4 /nobreak >nul',
+    'rmdir /S /Q "%APPDATA%\\Code\\Service Worker" 2>nul',
+    'rmdir /S /Q "%APPDATA%\\Code\\Code Cache" 2>nul',
+    'rmdir /S /Q "%APPDATA%\\Code\\GPUCache" 2>nul',
+    'start "" "' + exe + '"',
+    ''
+  ].join('\r\n');
+  fs.writeFileSync(file, body, 'ascii');
+  require('child_process').spawn('cmd.exe', ['/c', file], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+  webviewLog('sw-repair-scheduled', { file, exe });
+  return file;
 }
 
 function setWebviewHtml(panel, html) {
@@ -2056,21 +2051,20 @@ class Lms {
         webviewLog('panel-fallback-text', {});
         await this.showTaskDoc(true);
         const again = await vscode.window.showInformationMessage(
-          'LMS: панель условия не загрузилась, показал условие текстом.',
-          'Попробовать панель ещё раз'
+          'LMS: панель условия не загрузилась, показал условие текстом. Кэш webview VS Code сломан — лечится перезапуском.',
+          'Попробовать панель ещё раз',
+          'Починить webview'
         );
         if (again === 'Попробовать панель ещё раз') {
           this.webviewBroken = false;
           await this.showTaskPanel(this.detailCache.get(String(t.taskId)) || { title: t.taskTitle }, serverCode);
+        } else if (again === 'Починить webview') {
+          await vscode.commands.executeCommand('yandexLms.fixWebviewProfile');
         }
         return;
       }
-      // чистим состояние service worker в профиле VS Code: после чистки
-      // регистрация проходит с первого раза
-      try {
-        const res = cleanupServiceWorkerState();
-        this.output().appendLine('LMS: очищено состояние webview: ' + res.join('; '));
-      } catch (e) { }
+      // чистить профиль на живом VS Code нельзя: это ломает webview до перезапуска.
+      // Поэтому просто пробуем открыть панель заново.
       await sleep(500);
       await this.openPanel(t, detail, serverCode);
     }, 4000);
@@ -4573,9 +4567,16 @@ async function activate(context) {
   await lms.init();
   try {
     if (await lms.context.globalState.get('yandexLms.swBroken', false)) {
-      const res = cleanupServiceWorkerState();
-      lms.output().appendLine('LMS: после прошлой поломки webview очищено: ' + res.join('; '));
       await lms.context.globalState.update('yandexLms.swBroken', false);
+      webviewLog('sw-broken-hint', {});
+      const pick = await vscode.window.showWarningMessage(
+        'LMS: панель задачи не загрузилась из-за сломанного кэша webview в VS Code. Условие показывается текстом. Починить?',
+        'Починить (перезапуск VS Code)',
+        'Позже'
+      );
+      if (pick === 'Починить (перезапуск VS Code)') {
+        await vscode.commands.executeCommand('yandexLms.fixWebviewProfile');
+      }
     }
   } catch (e) { }
 
@@ -4793,9 +4794,22 @@ async function activate(context) {
     vscode.commands.registerCommand('yandexLms.answer', async (node) => { if (await lms.selectNode(node)) return; await lms.markersPickAndSend(); }),
     vscode.commands.registerCommand('yandexLms.pep8', async (node) => { if (await lms.selectNode(node)) return; await lms.pep8Check(); }),
     vscode.commands.registerCommand('yandexLms.fixWebviewProfile', async () => {
-      const res = cleanupServiceWorkerState();
-      lms.output().appendLine('LMS: очищено: ' + res.join('; '));
-      vscode.window.showInformationMessage('LMS: состояние webview очищено: ' + res.length + ' папок. Перезагрузите окно.');
+      if (process.platform !== 'win32') {
+        vscode.window.showInformationMessage('LMS: закройте VS Code, удалите папку «Service Worker» в профиле и запустите VS Code снова.');
+        return;
+      }
+      const pick = await vscode.window.showWarningMessage(
+        'Починка webview: VS Code закроется, очистится кэш service worker, VS Code запустится снова. Несохранённых данных нет?',
+        { modal: true },
+        'Перезапустить VS Code'
+      );
+      if (pick !== 'Перезапустить VS Code') return;
+      try {
+        const f = scheduleWebviewRepair();
+        lms.output().appendLine('LMS: починка webview запланирована: ' + f);
+      } catch (e) {
+        vscode.window.showErrorMessage('LMS: не удалось запланировать починку: ' + (e.message || e));
+      }
     }),
     vscode.commands.registerCommand('yandexLms.showPanel', async () => {
       lms.webviewBroken = false;
