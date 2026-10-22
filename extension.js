@@ -1108,7 +1108,7 @@ class Lms {
       const s = AI_POOL_STATE[e.id] || {};
       const cd = aiCooldownLeft(e);
       return aiEntryLabel(e) + ' [' + aiKeyTail(e.apiKey) + ']: ' +
-        (cd ? (s.kind === 'limit' ? 'лимит' : (s.kind === 'auth' ? 'ключ не принят' : 'пауза')) +
+        (cd ? (s.kind === 'limit' ? 'лимит' : (s.kind === 'auth' ? 'ключ не принят' : (s.kind === 'denied' ? 'доступ к модели закрыт' : 'пауза'))) +
           ' ещё ' + Math.ceil(cd / 1000) + ' с' + (s.lastError ? ' — ' + s.lastError : '') : 'работает');
     }).join('\n');
     return '<span title="' + escapeHtml(tip).replace(/\n/g, '&#10;') + '">ИИ: <b>' + escapeHtml(active.label || active.provider) + '</b> · ' + escapeHtml(active.model) +
@@ -3970,7 +3970,7 @@ function aiMarkFail(entry, err, silent) {
   if (silent) return;
   const st = AI_POOL_STATE[entry.id] = AI_POOL_STATE[entry.id] || {};
   const status = Number((err && err.status) || 0);
-  const kind = (err && err.kind) || (status === 401 || status === 403 ? 'auth' : ((status === 402 || status === 429) ? 'limit' : 'error'));
+  const kind = (err && err.kind) || (status === 401 ? 'auth' : (status === 403 ? 'denied' : ((status === 402 || status === 429) ? 'limit' : 'error')));
   st.fails = (st.fails || 0) + 1;
   st.lastError = String((err && err.message) || err || '').slice(0, 300);
   st.lastFail = Date.now();
@@ -3978,6 +3978,7 @@ function aiMarkFail(entry, err, silent) {
   let ms;
   if (kind === 'auth') ms = 6 * 60 * 60 * 1000;
   else if (kind === 'limit') ms = Math.max(60 * 1000, Number(err && err.retryAfterMs) || 5 * 60 * 1000);
+  else if (kind === 'denied') ms = 10 * 60 * 1000;
   else ms = 20 * 1000;
   st.until = Date.now() + ms;
   aiLog({ event: 'cooldown', entry: aiEntryLabel(entry), key: aiKeyTail(entry.apiKey), kind, ms, status, error: st.lastError.slice(0, 160) });
@@ -4066,7 +4067,7 @@ async function aiChatOnce(entry, prompt, system, timeoutMs, images, opts, ctl) {
     } catch (e) { }
     if (res.status === 401) msg = 'неверный API-ключ';
     aiLog({ event: 'http-fail', entry: aiEntryLabel(entry), key: aiKeyTail(entry.apiKey), status: res.status, ms, msg: String(msg).slice(0, 200) });
-    const kind = (res.status === 401 || res.status === 403) ? 'auth' : ((res.status === 402 || res.status === 429) ? 'limit' : 'error');
+    const kind = res.status === 401 ? 'auth' : (res.status === 403 ? 'denied' : ((res.status === 402 || res.status === 429) ? 'limit' : 'error'));
     throw aiError('API ' + res.status + ': ' + msg, { status: res.status, retryAfterMs: retryAfterS > 0 ? retryAfterS * 1000 : 0, retryable: true, kind });
   }
   aiLog({ event: 'http', entry: aiEntryLabel(entry), key: aiKeyTail(entry.apiKey), status: res.status, ms, withImages: useImages });
@@ -4090,7 +4091,10 @@ async function aiChat(prompt, system, timeoutMs, images, opts) {
   const hedgeDelay = Math.max(1500, Number(cfg().get('ai.hedgeDelay') || 7000));
 
   const controllers = new Set();
-  const inflight = [];
+  // pending хранит обёртки, которые сами себя убирают при завершении: по значению
+  // из Promise.race нельзя удалить промис (indexOf вернёт -1) — это давало
+  // бесконечный цикл и шторм ошибок.
+  const pending = new Set();
   const errors = [];
   let launched = 0;
   let settled = false;
@@ -4102,10 +4106,12 @@ async function aiChat(prompt, system, timeoutMs, images, opts) {
     const ctl = new AbortController();
     controllers.add(ctl);
     const remain = Math.max(5000, deadline - Date.now());
-    const p = aiChatOnce(entry, prompt, system, remain, images, o, ctl)
+    const base = aiChatOnce(entry, prompt, system, remain, images, o, ctl)
       .then(r => ({ ok: true, entry, text: r.text, ms: r.ms }))
       .catch(err => ({ ok: false, entry, err }));
-    inflight.push(p);
+    let wrapped = null;
+    wrapped = base.then(v => { pending.delete(wrapped); return v; });
+    pending.add(wrapped);
     return true;
   };
 
@@ -4117,10 +4123,9 @@ async function aiChat(prompt, system, timeoutMs, images, opts) {
   launch();
 
   try {
-    while (inflight.length) {
-      const r = await Promise.race(inflight);
-      const i = inflight.indexOf(r);
-      if (i >= 0) inflight.splice(i, 1);
+    for (;;) {
+      if (!pending.size && !launch()) break;
+      const r = await Promise.race([...pending]);
       if (r.ok) {
         settled = true;
         aiMarkOk(r.entry, r.ms);
@@ -4130,7 +4135,7 @@ async function aiChat(prompt, system, timeoutMs, images, opts) {
       aiMarkFail(r.entry, r.err, o.noPenalty);
       errors.push(r);
       if (Date.now() >= deadline) break;
-      if (!inflight.length && !launch()) break;
+      if (!pending.size && !launch()) break;
     }
   } finally {
     settled = true;
@@ -4299,7 +4304,16 @@ function aiLog(obj) {
   try {
     const dir = path.join(os.tmpdir(), 'yandex-lms-diag');
     fs.mkdirSync(dir, { recursive: true });
-    fs.appendFileSync(path.join(dir, 'ai-log.jsonl'), JSON.stringify(Object.assign({ ts: new Date().toISOString() }, obj)) + '\n', 'utf8');
+    const file = path.join(dir, 'ai-log.jsonl');
+    try {
+      const st = fs.statSync(file);
+      if (st.size > 2 * 1024 * 1024) {
+        const old = path.join(dir, 'ai-log.old.jsonl');
+        try { fs.rmSync(old, { force: true }); } catch (e) { }
+        fs.renameSync(file, old);
+      }
+    } catch (e) { }
+    fs.appendFileSync(file, JSON.stringify(Object.assign({ ts: new Date().toISOString() }, obj)) + '\n', 'utf8');
   } catch (e) { }
 }
 
