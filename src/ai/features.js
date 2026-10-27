@@ -271,7 +271,7 @@ function attach(Lms) {
       const list = this.aiChatMsgs(t.taskId);
       const hist = list.slice(-9, -1)
         .filter(m => m.role !== 'sys')
-        .map(m => (m.role === 'user' ? 'Ученик: ' : 'ИИ: ') + String(m.text).slice(0, 2000))
+        .map(m => (m.role === 'user' ? 'Ученик: ' : 'Наставник: ') + String(m.text).slice(0, 2000))
         .join('\n\n');
       if (mode === 'code') {
         const r = await this.aiChatToCode(t, msg, hist);
@@ -375,7 +375,7 @@ function attach(Lms) {
       : (t.filePath ? 'ответ — в чат' : '');
     const placeholder = mode === 'code'
       ? 'Спроси или попроси изменить код… (Enter — запишет в файл)'
-      : 'Спроси ИИ о задаче… (Enter — отправить)';
+      : 'Спроси наставника о задаче… (Enter — отправить)';
     return '<div class="chat-log" id="chat-log">' + msgs + thinking + '</div>' +
       '<div class="chat-composer">' +
       '<textarea id="chat-input" rows="1" placeholder="' + placeholder + '"' + locked + '>' + escapeHtml(draft) + '</textarea>' +

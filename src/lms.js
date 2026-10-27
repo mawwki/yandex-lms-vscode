@@ -672,7 +672,7 @@ class Lms {
       L.push('## Чат с ИИ');
       for (const m of chat) {
         L.push('');
-        L.push((m.role === 'user' ? '**Ученик:** ' : '**ИИ:** ') + String(m.text));
+        L.push((m.role === 'user' ? '**Ученик:** ' : '**Наставник:** ') + String(m.text));
       }
     }
     const logs = this.contestLogsText();
