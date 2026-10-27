@@ -2,3 +2,7 @@
 node_modules/
 .vscode-test/
 *.log
+dist/
+.preview/
+.workbuddy-ai/
+.zcode/

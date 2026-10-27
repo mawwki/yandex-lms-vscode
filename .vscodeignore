@@ -1,0 +1,10 @@
+dist/**
+test/**
+scripts/**
+.preview/**
+docs/**
+.github/**
+.workbuddy-ai/**
+.zcode/**
+*.vsix
+.gitignore

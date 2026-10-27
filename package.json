@@ -1,17 +1,21 @@
 {
   "name": "yandex-lms",
   "displayName": "Яндекс LMS",
-  "description": "Полный доступ к LMS Яндекса (lms.yandex.ru) внутри VS Code: условие слева, код справа, отправка решения одной клавишей",
-  "version": "1.4.12",
+  "description": "Полный доступ к LMS Яндекса (lms.yandex.ru) внутри VS Code: условие слева, код справа, отправка решения одной клавишей, ИИ-помощник (API-ключи и OpenCode CLI)",
+  "version": "2.5.3",
   "publisher": "local",
   "license": "MIT",
   "engines": {
-    "vscode": "^1.82.0"
+    "vscode": "^1.85.0"
   },
   "categories": [
     "Other"
   ],
   "main": "./extension.js",
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "package": "vsce package --no-dependencies --allow-missing-repository --out dist/"
+  },
   "activationEvents": [
     "onStartupFinished"
   ],
@@ -19,165 +23,191 @@
     "commands": [
       {
         "command": "yandexLms.loginQr",
-        "title": "LMS: Войти по QR-коду (телефон)",
+        "title": "Войти по QR-коду (телефон)",
+        "category": "Яндекс LMS",
         "icon": "$(device-camera)"
       },
       {
         "command": "yandexLms.loginMenu",
-        "title": "LMS: Вход (QR / пароль / cookie)",
+        "title": "Вход (QR / пароль / cookie)",
+        "category": "Яндекс LMS",
         "icon": "$(sign-in)"
       },
       {
         "command": "yandexLms.login",
-        "title": "LMS: Войти (логин и пароль Яндекса)"
+        "title": "Войти (логин и пароль Яндекса)",
+        "category": "Яндекс LMS"
       },
       {
         "command": "yandexLms.loginByCookie",
-        "title": "LMS: Войти по cookie (если включена 2FA / вход по QR)"
+        "title": "Войти по cookie (если включена 2FA)",
+        "category": "Яндекс LMS"
       },
       {
         "command": "yandexLms.logout",
-        "title": "LMS: Выйти"
+        "title": "Выйти",
+        "category": "Яндекс LMS"
       },
       {
         "command": "yandexLms.refresh",
-        "title": "LMS: Обновить список курсов"
+        "title": "Обновить список курсов",
+        "category": "Яндекс LMS"
       },
       {
         "command": "yandexLms.openTask",
-        "title": "LMS: Открыть задание (условие + редактор)"
+        "title": "Открыть задание (условие + редактор)",
+        "category": "Яндекс LMS"
       },
       {
         "command": "yandexLms.submit",
-        "title": "LMS: Отправить решение на проверку"
+        "title": "Отправить решение на проверку",
+        "category": "Яндекс LMS"
       },
       {
         "command": "yandexLms.pullSolution",
-        "title": "LMS: Забрать моё решение из LMS в файл"
+        "title": "Забрать моё решение из LMS в файл",
+        "category": "Яндекс LMS"
       },
       {
         "command": "yandexLms.runLocal",
-        "title": "LMS: Запустить решение локально (python)"
+        "title": "Запустить решение локально (python)",
+        "category": "Яндекс LMS"
       },
       {
         "command": "yandexLms.openInBrowser",
-        "title": "LMS: Открыть задание в браузере"
-      },
-      {
-        "command": "yandexLms.diagnose",
-        "title": "LMS: Диагностика API"
+        "title": "Открыть задание в браузере",
+        "category": "Яндекс LMS"
       },
       {
         "command": "yandexLms.welcome",
-        "title": "LMS: Как пользоваться"
+        "title": "Как пользоваться",
+        "category": "Яндекс LMS"
       },
       {
-        "command": "yandexLms.collect",
-        "title": "LMS: Собрать отчёт для отладки"
+        "command": "yandexLms.settings",
+        "title": "Настройки",
+        "category": "Яндекс LMS",
+        "icon": "$(gear)"
       },
       {
         "command": "yandexLms.showLog",
-        "title": "LMS: Показать лог"
+        "title": "Показать лог",
+        "category": "Яндекс LMS"
       },
       {
-        "command": "yandexLms.testPanel",
-        "title": "LMS: Тест панели (диагностика)",
-        "category": "Yandex LMS"
+        "command": "yandexLms.diagnose",
+        "title": "Диагностика API",
+        "category": "Яндекс LMS"
       },
       {
-        "command": "yandexLms.aiHints",
-        "title": "LMS: AI — подсказки (вставить в код)",
-        "category": "Yandex LMS"
-      },
-      {
-        "command": "yandexLms.aiSolve",
-        "title": "LMS: AI — решение задачи",
-        "category": "Yandex LMS"
-      },
-      {
-        "command": "yandexLms.aiCheck",
-        "title": "LMS: AI — проверить решение",
-        "category": "Yandex LMS"
-      },
-      {
-        "command": "yandexLms.aiClear",
-        "title": "LMS: AI — очистить подсказки",
-        "category": "Yandex LMS"
-      },
-      {
-        "command": "yandexLms.aiSettings",
-        "title": "LMS: AI — настройки провайдера",
-        "category": "Yandex LMS"
-      },
-      {
-        "command": "yandexLms.aiKeys",
-        "title": "LMS: AI — ключи и лимиты (несколько API)",
-        "category": "Yandex LMS"
-      },
-      {
-        "command": "yandexLms.aiTest",
-        "title": "LMS: AI — проверить подключение",
-        "category": "Yandex LMS"
+        "command": "yandexLms.collect",
+        "title": "Собрать отчёт для отладки",
+        "category": "Яндекс LMS"
       },
       {
         "command": "yandexLms.taskMenu",
-        "title": "LMS: Действия над задачей",
-        "category": "Yandex LMS"
+        "title": "Действия над задачей",
+        "category": "Яндекс LMS"
       },
       {
         "command": "yandexLms.refreshStatus",
-        "title": "LMS: Обновить статус задачи",
-        "category": "Yandex LMS"
-      },
-      {
-        "command": "yandexLms.showPanel",
-        "title": "LMS: Условие — панелью (как раньше)",
-        "category": "Yandex LMS"
-      },
-      {
-        "command": "yandexLms.showText",
-        "title": "LMS: Условие — текстом",
-        "category": "Yandex LMS"
-      },
-      {
-        "command": "yandexLms.fixWebview",
-        "title": "LMS: Починить панель условия (перезагрузить webview)",
-        "category": "Yandex LMS"
-      },
-      {
-        "command": "yandexLms.aiFix",
-        "title": "LMS: AI — исправить решение по ошибке проверки",
-        "category": "Yandex LMS"
+        "title": "Обновить статус задачи",
+        "category": "Яндекс LMS"
       },
       {
         "command": "yandexLms.details",
-        "title": "LMS: Подробности проверки",
-        "category": "Yandex LMS"
-      },
-      {
-        "command": "yandexLms.aiForget",
-        "title": "LMS: AI — забыть накопленные ошибки",
-        "category": "Yandex LMS"
-      },
-      {
-        "command": "yandexLms.findImages",
-        "title": "LMS: Найти задания с картинками (диагностика)",
-        "category": "Yandex LMS"
-      },
-      {
-        "command": "yandexLms.fixWebviewProfile",
-        "title": "LMS: Починить webview (очистить Service Worker)",
-        "category": "Yandex LMS"
+        "title": "Подробности проверки",
+        "category": "Яндекс LMS"
       },
       {
         "command": "yandexLms.pep8",
-        "title": "LMS: Проверить код на PEP 8",
-        "category": "Yandex LMS"
+        "title": "Проверить код на PEP 8",
+        "category": "Яндекс LMS"
       },
       {
         "command": "yandexLms.answer",
-        "title": "LMS: Ответить на задание (выбрать вариант)",
-        "category": "Yandex LMS"
+        "title": "Ответить на задание (выбрать вариант)",
+        "category": "Яндекс LMS"
+      },
+      {
+        "command": "yandexLms.findImages",
+        "title": "Найти задания с картинками (диагностика)",
+        "category": "Яндекс LMS"
+      },
+      {
+        "command": "yandexLms.showPanel",
+        "title": "Условие — панелью",
+        "category": "Яндекс LMS"
+      },
+      {
+        "command": "yandexLms.showText",
+        "title": "Условие — текстом",
+        "category": "Яндекс LMS"
+      },
+      {
+        "command": "yandexLms.fixWebview",
+        "title": "Починить панель условия (перезагрузить webview)",
+        "category": "Яндекс LMS"
+      },
+      {
+        "command": "yandexLms.fixWebviewProfile",
+        "title": "Починить webview (очистить Service Worker)",
+        "category": "Яндекс LMS"
+      },
+      {
+        "command": "yandexLms.aiHints",
+        "title": "AI — подсказки",
+        "category": "Яндекс LMS"
+      },
+      {
+        "command": "yandexLms.aiSolve",
+        "title": "AI — решение задачи",
+        "category": "Яндекс LMS"
+      },
+      {
+        "command": "yandexLms.aiCheck",
+        "title": "AI — проверить решение",
+        "category": "Яндекс LMS"
+      },
+      {
+        "command": "yandexLms.aiFix",
+        "title": "AI — исправить решение по ошибке проверки",
+        "category": "Яндекс LMS"
+      },
+      {
+        "command": "yandexLms.aiClear",
+        "title": "AI — очистить подсказки",
+        "category": "Яндекс LMS"
+      },
+      {
+        "command": "yandexLms.aiForget",
+        "title": "AI — забыть накопленные ошибки",
+        "category": "Яндекс LMS"
+      },
+      {
+        "command": "yandexLms.aiSettings",
+        "title": "AI — поведение (подсказки, правила курса)",
+        "category": "Яндекс LMS"
+      },
+      {
+        "command": "yandexLms.aiKeys",
+        "title": "AI — ключи и провайдеры",
+        "category": "Яндекс LMS"
+      },
+      {
+        "command": "yandexLms.aiTest",
+        "title": "AI — проверить подключение",
+        "category": "Яндекс LMS"
+      },
+      {
+        "command": "yandexLms.aiOpencode",
+        "title": "AI — подключить OpenCode CLI",
+        "category": "Яндекс LMS"
+      },
+      {
+        "command": "yandexLms.aiCline",
+        "title": "AI — подключить Cline CLI",
+        "category": "Яндекс LMS"
       }
     ],
     "keybindings": [
@@ -190,9 +220,6 @@
         "key": "ctrl+alt+t"
       }
     ],
-    "keybindingCategories": {
-      "yandexLms": "Яндекс LMS"
-    },
     "menus": {
       "view/title": [
         {
@@ -214,81 +241,11 @@
           "command": "yandexLms.welcome",
           "when": "view == yandexLms.tree",
           "group": "navigation@3"
-        }
-      ],
-      "commandPalette": [
-        {
-          "command": "yandexLms.loginMenu"
         },
         {
-          "command": "yandexLms.collect"
-        },
-        {
-          "command": "yandexLms.showLog"
-        },
-        {
-          "command": "yandexLms.loginQr",
-          "when": "true"
-        },
-        {
-          "command": "yandexLms.testPanel"
-        },
-        {
-          "command": "yandexLms.aiHints"
-        },
-        {
-          "command": "yandexLms.aiSolve"
-        },
-        {
-          "command": "yandexLms.aiCheck"
-        },
-        {
-          "command": "yandexLms.aiClear"
-        },
-        {
-          "command": "yandexLms.aiSettings"
-        },
-        {
-          "command": "yandexLms.aiKeys"
-        },
-        {
-          "command": "yandexLms.aiTest"
-        },
-        {
-          "command": "yandexLms.taskMenu"
-        },
-        {
-          "command": "yandexLms.refreshStatus"
-        },
-        {
-          "command": "yandexLms.showPanel"
-        },
-        {
-          "command": "yandexLms.showText"
-        },
-        {
-          "command": "yandexLms.fixWebview"
-        },
-        {
-          "command": "yandexLms.aiFix"
-        },
-        {
-          "command": "yandexLms.details"
-        },
-        {
-          "command": "yandexLms.aiForget"
-        },
-        {
-          "command": "yandexLms.findImages"
-        },
-        {
-          "command": "yandexLms.fixWebviewProfile"
-        },
-        {
-          "command": "yandexLms.pep8"
-        },
-        {
-          "command": "yandexLms.answer"
+          "command": "yandexLms.settings",
+          "when": "view == yandexLms.tree",
+          "group": "navigation@4"
         }
       ],
       "view/item/context": [
@@ -338,6 +295,16 @@
           "group": "lms@108"
         },
         {
+          "command": "yandexLms.aiKeys",
+          "when": "view == yandexLms.tree && viewItem == lmsTask",
+          "group": "lms@112"
+        },
+        {
+          "command": "yandexLms.settings",
+          "when": "view == yandexLms.tree && viewItem == lmsTask",
+          "group": "lms@113"
+        },
+        {
           "command": "yandexLms.details",
           "when": "view == yandexLms.tree && viewItem == lmsTask",
           "group": "lms@109"
@@ -365,7 +332,7 @@
         "yandexLms.pythonPath": {
           "type": "string",
           "default": "python",
-          "description": "Команда запуска Python для локального теста"
+          "description": "Команда запуска Python для локального теста и PEP 8"
         },
         "yandexLms.folderName": {
           "type": "string",
@@ -377,53 +344,46 @@
           "default": 60,
           "description": "Сколько секунд ждать вердикт проверки после отправки"
         },
-        "yandexLms.ai.provider": {
+        "yandexLms.taskView": {
           "type": "string",
           "enum": [
-            "none",
-            "openrouter",
-            "mistral",
-            "openai",
-            "ollama",
-            "custom"
+            "panel",
+            "text",
+            "auto"
           ],
-          "default": "openrouter",
-          "description": "Провайдер ИИ для подсказок (OpenRouter, Mistral, OpenAI, Ollama, любой OpenAI-совместимый)"
+          "default": "panel",
+          "enumDescriptions": [
+            "Панель условия (webview, с кнопками)",
+            "Условие текстом + preview VS Code (надёжно, но без кнопок)",
+            "Авто: сначала панель, при неудаче текст"
+          ],
+          "description": "Как показывать условие задачи"
         },
-        "yandexLms.ai.apiKey": {
-          "type": "string",
-          "default": "",
-          "description": "API-ключ провайдера ИИ"
-        },
-        "yandexLms.ai.model": {
-          "type": "string",
-          "default": "",
-          "description": "Модель ИИ (например deepseek/deepseek-chat, mistral-small-latest)"
-        },
-        "yandexLms.ai.baseUrl": {
-          "type": "string",
-          "default": "",
-          "description": "Базовый URL API (для совместимых провайдеров), например https://openrouter.ai/api/v1"
+        "yandexLms.debug": {
+          "type": "boolean",
+          "default": false,
+          "description": "Отладка: писать логи (запросы к ИИ, отправка, webview) в %TEMP%\\yandex-lms-diag. Не включайте без необходимости — туда попадают условия задач и ваш код"
         },
         "yandexLms.ai.temperature": {
           "type": "number",
           "default": 0.2,
           "description": "Температура генерации подсказок"
         },
-        "yandexLms.taskView": {
+        "yandexLms.ai.opencodeBin": {
           "type": "string",
-          "enum": [
-            "auto",
-            "panel",
-            "text"
-          ],
-          "default": "panel",
-          "enumDescriptions": [
-            "Панель условия (как было)",
-            "Условие текстом + preview VS Code (надёжно, но без кнопок)",
-            "Авто: сначала панель, при неудаче текст"
-          ],
-          "description": "Как показывать условие задачи"
+          "default": "opencode",
+          "description": "Команда/путь к OpenCode CLI (по умолчанию «opencode» из PATH)"
+        },
+        "yandexLms.ai.clineBin": {
+          "type": "string",
+          "default": "cline",
+          "description": "Команда/путь к Cline CLI (по умолчанию «cline» из PATH)"
+        },
+        "yandexLms.ai.courseRules": {
+          "type": "string",
+          "default": "",
+          "editPresentation": "multilineText",
+          "description": "Правила курса для ИИ (что разрешено/запрещено ученику). Пусто — встроенные правила базового курса «Программирование на Python»"
         },
         "yandexLms.ai.autocomplete": {
           "type": "boolean",
@@ -479,5 +439,22 @@
         }
       ]
     }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mawwki/yandex-lms-vscode.git"
+  },
+  "keywords": [
+    "lms",
+    "yandex",
+    "education",
+    "python",
+    "vscode-extension",
+    "ai",
+    "tutor"
+  ],
+  "homepage": "https://github.com/mawwki/yandex-lms-vscode#readme",
+  "bugs": {
+    "url": "https://github.com/mawwki/yandex-lms-vscode/issues"
   }
 }
