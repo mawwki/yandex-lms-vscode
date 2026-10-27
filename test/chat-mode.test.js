@@ -102,7 +102,7 @@ test('у задания без файла кода переключателя н
   const lms = makeLms({ noFile: true, state: { 'yandexLms.aiChatMode': 'code' } });
   const html = lms.aiBlockHtml();
   assert.doesNotMatch(html, /data-act="aiMode"/);
-  assert.match(html, /Спроси наставника/);
+  assert.match(html, /Спроси ИИ/);
 });
 
 test('aiSameCode игнорирует хвостовые пробелы и переводы строк', () => {
