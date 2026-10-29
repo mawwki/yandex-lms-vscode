@@ -154,6 +154,48 @@ class LmsClient {
     return this.api('GET', `/api/student/tasks/${taskId}?groupId=${groupId}`);
   }
 
+  // Материалы урока (учебники). В SPA список берётся из /api/student/lessons/...,
+  // через прокси тот же путь тоже работает — оставляем фолбэк на случай
+  // различий между контурами LMS.
+  async lessonMaterials(courseId, lessonId, groupId) {
+    const urls = [
+      `/api/student/lessons/${lessonId}/groups/${groupId}/materials?groupId=${groupId}`,
+      `/api/proxy/student/lessons/${lessonId}/groups/${groupId}/materials?groupId=${groupId}`
+    ];
+    let last = null;
+    for (const u of urls) {
+      try {
+        last = await this.api('GET', u);
+        if (last.status === 200 && last.json) return last;
+      } catch (e) {
+        last = { status: 0, json: null, text: String(e.message || e), url: u };
+      }
+    }
+    return last || { status: 0, json: null, text: 'нет ответа', url: '' };
+  }
+
+  // Детали материала: сайт ходит именно через /api/proxy/materials/<id>.
+  // Прямой /api/materials/<id> отдаёт 404, но пусть будет фолбэком.
+  async material(materialId, lessonId) {
+    const qs = lessonId !== undefined && lessonId !== null ? `?lessonId=${lessonId}` : '';
+    const urls = [
+      `/api/proxy/materials/${materialId}${qs}`,
+      `/api/proxy/materials/${materialId}`,
+      `/api/materials/${materialId}${qs}`,
+      `/api/materials/${materialId}`
+    ].filter((u, i, a) => a.indexOf(u) === i);
+    let last = null;
+    for (const u of urls) {
+      try {
+        last = await this.api('GET', u);
+        if (last.status === 200 && last.json) return last;
+      } catch (e) {
+        last = { status: 0, json: null, text: String(e.message || e), url: u };
+      }
+    }
+    return last || { status: 0, json: null, text: 'нет ответа', url: '' };
+  }
+
   async solution(solutionId) {
     return this.api('GET', `/api/student/solutions/${solutionId}`);
   }

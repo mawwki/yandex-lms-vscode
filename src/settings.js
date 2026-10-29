@@ -25,6 +25,7 @@ function jsData(obj) {
 
 const SECTIONS = [
   { id: 'account', title: 'Аккаунт и LMS' },
+  { id: 'lens', title: 'Google Объектив' },
   { id: 'ai', title: 'ИИ: провайдеры' },
   { id: 'aiBehavior', title: 'ИИ: поведение' },
   { id: 'diag', title: 'Диагностика' }
@@ -36,6 +37,11 @@ const TASK_VIEW_OPTIONS = [
   { value: 'auto', label: 'Авто: панель, при сбое — текст' }
 ];
 
+const LENS_OPEN_OPTIONS = [
+  { value: 'browser', label: 'В браузере по умолчанию' },
+  { value: 'panel', label: 'В VS Code (снимок + ссылка)' }
+];
+
 // Описание полей настроек: одно место, откуда берутся и разметка, и валидация.
 const FIELDS = [
   { key: 'apiBase', section: 'account', type: 'text', label: 'Адрес LMS', desc: 'Обычно менять не нужно', placeholder: 'https://lms.yandex.ru' },
@@ -43,6 +49,9 @@ const FIELDS = [
   { key: 'pythonPath', section: 'account', type: 'text', label: 'Python', desc: 'Команда запуска для локального прогона и PEP 8', placeholder: 'python' },
   { key: 'pollSeconds', section: 'account', type: 'number', label: 'Ожидание вердикта', desc: 'Сколько секунд ждать проверку после отправки', min: 10, max: 600, step: 5, unit: 'с' },
   { key: 'taskView', section: 'account', type: 'enum', label: 'Условие задачи', desc: 'Как показывать текст задания', options: TASK_VIEW_OPTIONS },
+
+  { key: 'lens.openIn', section: 'lens', type: 'enum', label: 'Где открывать результат', desc: 'Google не разрешает встраивать страницу результатов, поэтому в VS Code показывается снимок и ссылка', options: LENS_OPEN_OPTIONS },
+  { key: 'lens.scale', section: 'lens', type: 'number', label: 'Качество снимка', desc: 'Масштаб растрирования условия: больше — чётче и тяжелее', min: 1, max: 3, step: 1, unit: '×' },
 
   { heading: 'Автодополнение', section: 'aiBehavior' },
   { key: 'ai.autocomplete', section: 'aiBehavior', type: 'bool', label: 'Подсказывать следующую строку', desc: 'ИИ-автодополнение прямо в редакторе Python' },
@@ -155,6 +164,37 @@ function poolCardHtml(e, activeId) {
     '<button class="btn xs danger" data-act="poolDelete">Удалить</button>' +
     (cd > 0 && st.lastError ? '<span class="muted err-text" title="' + escapeHtml(st.lastError) + '">' + escapeHtml(st.lastError) + '</span>' : '') +
     '</div></div>';
+}
+
+// Блок «Куки Google» в разделе Объектива: статус, авто-обновление и вставка
+// строки Cookie из браузера. Сами куки живут в SecretStorage, в HTML их нет.
+function lensCookieBlockHtml(lms) {
+  let st = { count: 0 };
+  try { if (lms && typeof lms.lensStatus === 'function') st = lms.lensStatus(); } catch (e) { }
+  const count = Number(st.count) || 0;
+  const when = st.at ? new Date(st.at).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '';
+  const src = st.source === 'browser' ? 'из браузера' : st.source === 'auto' ? 'гостевые' : '';
+  const pill = count
+    ? '<span class="pill ok">' + count + ' шт' + (src ? ' · ' + src : '') + (when ? ' · ' + escapeHtml(when) : '') + '</span>'
+    : '<span class="pill warn">кук нет</span>';
+
+  return '<h3 class="sub">Куки Google</h3>' +
+    '<div class="row" data-search="куки google cookie объектив робот проверка captcha">' +
+    '<div class="row-main"><div class="row-label">Куки для запросов к Объективу</div>' +
+    '<div class="row-desc">Без кук Google чаще включает проверку «я не робот». Гостевые куки забираются сами при первом снимке; кнопка «Обновить автоматически» делает это вручную. ' +
+    'Куки своего аккаунта Chrome и Edge не отдают (шифруют ключом, привязанным к браузеру), поэтому их вставляют строкой из DevTools — ' +
+    'они уходят в защищённое хранилище VS Code, а не в settings.json.</div></div>' +
+    '<div class="row-ctl">' + pill + '</div></div>' +
+    '<div class="actions">' +
+    '<button class="btn" data-act="lensWarm">Обновить автоматически</button>' +
+    '<button class="btn" data-act="lensTest">Проверить связь с Google</button>' +
+    '<button class="btn" data-act="action" data-name="lensOpen">Открыть lens.google.com</button>' +
+    (count ? '<button class="btn danger" data-act="lensClear">Удалить куки</button>' : '') +
+    '</div>' +
+    '<label class="f" data-search="куки google вставить строку браузер cookie"><span>Строка Cookie из браузера (F12 → Network → запрос к google.com → Cookie)</span>' +
+    '<textarea class="inp ta" id="lens-cookies" rows="3" spellcheck="false" placeholder="NID=...; SID=...; HSID=...; SSID=...; APISID=...; SAPISID=..."></textarea></label>' +
+    '<div class="actions"><button class="btn primary" data-act="lensSave">Сохранить куки</button>' +
+    '<span class="hint" id="lens-hint"></span></div>';
 }
 
 function providersJson() {
@@ -352,6 +392,12 @@ function settingsHtml(lms) {
       </div>
     </section>
     ${aiSection}
+    <section class="sec" id="sec-lens">
+      <h2>Google Объектив</h2>
+      <p class="lead">Ctrl+Alt+G — снимок условия задания уходит в Google Объектив, результат открывается в браузере или карточкой в VS Code.</p>
+      ${sectionRows('lens', conf)}
+      ${lensCookieBlockHtml(lms)}
+    </section>
     <section class="sec" id="sec-aiBehavior">
       <h2>ИИ: поведение</h2>
       <p class="lead">Подсказки в редакторе, проверка ответов модели и правила курса.</p>
@@ -569,6 +615,18 @@ function settingsHtml(lms) {
       vscode.postMessage({ type: 'poolAdd', entry: e });
       return;
     }
+    // ── Объектив: куки Google ──
+    if (act === 'lensSave') {
+      const ta = document.getElementById('lens-cookies');
+      const v = ta ? String(ta.value || '').trim() : '';
+      if (!v) return toast('Вставьте строку Cookie из браузера', 'warn');
+      if (ta) ta.value = '';
+      vscode.postMessage({ type: 'lensCookies', value: v });
+      return;
+    }
+    if (act === 'lensWarm') return vscode.postMessage({ type: 'lensWarm' });
+    if (act === 'lensClear') return vscode.postMessage({ type: 'lensClear' });
+    if (act === 'lensTest') return vscode.postMessage({ type: 'lensTest' });
     if (act === 'action') return vscode.postMessage({ type: 'action', name: el.getAttribute('data-name') });
   });
 
@@ -875,6 +933,10 @@ async function runAction(lms, panel, name) {
     await vscode.commands.executeCommand('workbench.action.openSettings', 'yandexLms');
     return;
   }
+  if (name === 'lensOpen') {
+    await lms.lensOpenSite();
+    return;
+  }
   const cmd = map[name];
   if (!cmd) return;
   await vscode.commands.executeCommand(cmd);
@@ -962,6 +1024,51 @@ function attachSettingsPanel(panel, lms) {
       }
       if (type === 'models') return await handleModels(lms, panel, msg);
       if (type === 'check') return await handleCheck(lms, panel, msg);
+      if (type === 'lensCookies') {
+        try {
+          const st = await lms.lensSaveCookies(msg.value);
+          post(panel, { type: 'toast', kind: 'ok', text: 'Куки сохранены: ' + st.count + ' шт' });
+        } catch (e) {
+          post(panel, { type: 'toast', kind: 'err', text: String(e.message || e) });
+        }
+        render(lms);
+        return;
+      }
+      if (type === 'lensWarm') {
+        post(panel, { type: 'toast', text: 'Забираю куки Google…' });
+        try {
+          const st = await lms.lensWarmUp();
+          post(panel, {
+            type: 'toast',
+            kind: st.count ? 'ok' : 'warn',
+            text: st.count ? 'Куки обновлены: ' + st.count + ' шт' : 'Google не отдал куки — проверьте сеть или VPN'
+          });
+        } catch (e) {
+          post(panel, { type: 'toast', kind: 'err', text: String(e.message || e) });
+        }
+        render(lms);
+        return;
+      }
+      if (type === 'lensClear') {
+        await lms.lensClearCookies();
+        render(lms);
+        post(panel, { type: 'toast', text: 'Куки Google удалены' });
+        return;
+      }
+      if (type === 'lensTest') {
+        post(panel, { type: 'toast', text: 'Стучусь в Google…' });
+        try {
+          const r = await lms.lensProbe();
+          const text = r.bot
+            ? 'Google просит проверку на робота — вставьте куки из браузера'
+            : 'Google ответил ' + r.status + (r.cookies ? ', кук получено: ' + r.cookies : '') + ' — Объектив доступен';
+          post(panel, { type: 'toast', kind: r.bot ? 'warn' : 'ok', text: text });
+        } catch (e) {
+          post(panel, { type: 'toast', kind: 'err', text: 'Google недоступен: ' + String(e.message || e) });
+        }
+        render(lms);
+        return;
+      }
       if (type === 'action') return await runAction(lms, panel, msg.name);
     } catch (e) {
       lms.output().appendLine('Настройки (' + type + '): ' + (e.message || e));

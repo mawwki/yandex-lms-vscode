@@ -67,6 +67,12 @@ test('все модули загружаются и экспортируют о�
   assert.strictEqual(typeof oc.runOpenCode, 'function');
   const client = require(path.join(root, 'src/client.js'));
   assert.strictEqual(typeof client.LmsClient, 'function');
+  const material = require(path.join(root, 'src/material.js'));
+  assert.strictEqual(typeof material.attach, 'function');
+  assert.strictEqual(typeof material.materialHtml, 'function');
+  const highlight = require(path.join(root, 'src/highlight.js'));
+  assert.strictEqual(typeof highlight.highlightPython, 'function');
+  assert.strictEqual(typeof highlight.highlightCodeBlocks, 'function');
 });
 
 test('Lms создаётся, методы модулей подключены к прототипу', () => {
@@ -87,6 +93,13 @@ test('Lms создаётся, методы модулей подключены �
   assert.strictEqual(typeof lms.aiAddOpenCode, 'function');
   // из diagCommands.js
   assert.strictEqual(typeof lms.scanImages, 'function');
+  // из material.js
+  assert.strictEqual(typeof lms.openMaterial, 'function');
+  assert.strictEqual(typeof lms.openLessonMaterials, 'function');
+  assert.strictEqual(typeof lms.materialInBrowser, 'function');
+  assert.strictEqual(typeof lms.focusMaterialOnly, 'function');
+  assert.ok(lms.materialCache instanceof Map);
   // собственные
+  assert.strictEqual(typeof lms.closeTabsForMaterial, 'function');
   assert.strictEqual(typeof lms.submitCurrent, 'function');
 });

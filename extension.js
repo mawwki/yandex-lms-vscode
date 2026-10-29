@@ -20,6 +20,9 @@ async function activate(context) {
   // settings.json переносится туда же автоматически.
   await initPool(context);
 
+  // Куки Google для Объектива (Ctrl+Alt+G) — из SecretStorage.
+  try { await lms.lensInit(); } catch (e) { }
+
   // Диагностические файлы старше 7 дней удаляем — не копим личные данные.
   pruneOldFiles();
   // Мусорные per-task папки условий от старых версий — тоже.
@@ -180,12 +183,61 @@ async function activate(context) {
       });
     }),
 
+    vscode.commands.registerCommand('yandexLms.grades', async (node) => {
+      await lms.openGrades(node);
+    }),
+
     vscode.commands.registerCommand('yandexLms.openTask', async (node) => {
       if (!node) {
         vscode.window.showWarningMessage('LMS: выберите задачу в панели «Яндекс LMS».');
         return;
       }
       await lms.openTask(node);
+    }),
+
+    vscode.commands.registerCommand('yandexLms.openMaterial', async (node) => {
+      try {
+        await lms.openMaterial(node);
+      } catch (e) {
+        lms.output().appendLine('LMS material: ошибка openMaterial: ' + (e && e.stack || e));
+        vscode.window.showErrorMessage('LMS: не удалось открыть материал: ' + (e && e.message || e));
+      }
+    }),
+
+    vscode.commands.registerCommand('yandexLms.openLessonMaterials', async (node) => {
+      try {
+        await lms.openLessonMaterials(node);
+      } catch (e) {
+        lms.output().appendLine('LMS material: ошибка openLessonMaterials: ' + (e && e.stack || e));
+        vscode.window.showErrorMessage('LMS: не удалось открыть материалы урока: ' + (e && e.message || e));
+      }
+    }),
+
+    vscode.commands.registerCommand('yandexLms.materialInBrowser', async (node) => {
+      try {
+        await lms.materialInBrowser(node);
+      } catch (e) {
+        lms.output().appendLine('LMS material: ошибка materialInBrowser: ' + (e && e.stack || e));
+        vscode.window.showErrorMessage('LMS: не удалось открыть материал в браузере: ' + (e && e.message || e));
+      }
+    }),
+
+    vscode.commands.registerCommand('yandexLms.materialText', async () => {
+      try {
+        await lms.openMaterialText();
+      } catch (e) {
+        lms.output().appendLine('LMS material: ошибка materialText: ' + (e && e.stack || e));
+        vscode.window.showErrorMessage('LMS: не удалось открыть материал текстом: ' + (e && e.message || e));
+      }
+    }),
+
+    vscode.commands.registerCommand('yandexLms.materialPanel', async () => {
+      try {
+        await lms.retryMaterialPanel();
+      } catch (e) {
+        lms.output().appendLine('LMS material: ошибка materialPanel: ' + (e && e.stack || e));
+        vscode.window.showErrorMessage('LMS: не удалось открыть панель материала: ' + (e && e.message || e));
+      }
     }),
 
     vscode.commands.registerCommand('yandexLms.submit', async (node) => {
@@ -209,6 +261,11 @@ async function activate(context) {
     vscode.commands.registerCommand('yandexLms.openInBrowser', async (node) => {
       if (await lms.selectNode(node)) return;
       await lms.openCurrentInBrowser();
+    }),
+
+    vscode.commands.registerCommand('yandexLms.lens', async (node) => {
+      if (await lms.selectNode(node)) return;
+      await lms.lensTask();
     }),
 
     vscode.commands.registerCommand('yandexLms.diagnose', async () => {

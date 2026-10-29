@@ -202,7 +202,8 @@ function attach(Lms) {
           // Жёлтый «На проверке» в дереве сразу, без ожидания API.
           this.statusMap.set(String(t.taskId), { type: 'uploaded', verdict: '', badge: { icon: 'sync', color: 'charts.yellow', desc: 'На проверке' } });
           this.tree.refresh();
-          vscode.window.showInformationMessage('LMS: ответ отправлен!');
+          this.output().appendLine('LMS: ответ отправлен, задача ' + t.taskId + ' — «На проверке» (проверяет LMS, не расширение).');
+          vscode.window.showInformationMessage('LMS: ответ отправлен! Статус — «На проверке».');
           await this.reloadCurrentTask();
           return;
         }

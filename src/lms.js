@@ -13,7 +13,7 @@ const { LmsTreeProvider } = require('./tree');
 const {
   VERDICTS, pick, safeName, sleep, escapeHtml, stripTemplate, latestSubmissionOf,
   statusBadge, htmlToMarkdown, runProcess, runProcessInput, asArray, mdToPlainText,
-  normalizeOutput, parseExamples, isOkVerdict, verdictLabel
+  normalizeOutput, parseExamples, isOkVerdict, verdictLabel, flattenLessonTasks
 } = require('./util');
 const { diagDir, submitLog } = require('./diag');
 const { attach: attachPanel } = require('./panel');
@@ -21,6 +21,9 @@ const { attach: attachMarkers } = require('./markers');
 const { attach: attachAi } = require('./ai/features');
 const { attach: attachDiag } = require('./diagCommands');
 const { attach: attachSettings } = require('./settings');
+const { attach: attachLens } = require('./lens');
+const { attach: attachMaterial } = require('./material');
+const { attach: attachGrades } = require('./grades');
 
 const SECRET_COOKIES = 'yandexLms.cookies';
 const SECRET_LOGIN = 'yandexLms.login';
@@ -33,6 +36,15 @@ const CHECKED_STATUS_TYPES = [
   'accepted', 'accepted-after-deadline', 'samples-passed', 'partial-accepted',
   'assigned-to-p2p', 'on-clarifying'
 ];
+
+// VS Code отдаёт viewType webview-вкладки с префиксом mainThreadWebview-.
+// С WebviewPanel.viewType его нужно сравнивать без префикса, иначе панель
+// материала попадает в список «закрыть всё остальное» и закрывается сама.
+const WEBVIEW_TAB_PREFIX = 'mainThreadWebview-';
+function normalizeTabViewType(value) {
+  const s = value === undefined || value === null ? '' : String(value);
+  return s.indexOf(WEBVIEW_TAB_PREFIX) === 0 ? s.slice(WEBVIEW_TAB_PREFIX.length) : s;
+}
 
 class LmsContentProvider {
   constructor(lms) {
@@ -61,6 +73,13 @@ class Lms {
     this.statusMap = new Map();
     this.statusBusy = false;
     this.detailCache = new Map();
+    // Прогресс и баллы: снимок ведомости («LMS: Мои оценки») в памяти и в
+    // globalState — дерево рисует полоски сразу, без запросов к LMS.
+    this.progressMap = new Map();    // lessonId → { passed, total, score, scoreMax, overdue, ts }
+    this.courseProgress = new Map(); // courseId → { passed, total, score, scoreMax, title, ts }
+    this.gradesPanel = null;
+    this.gradesSnap = null;
+    this.gradesReady = false;
     this.aiChatLog = new Map();     // taskId → [{role:'user'|'ai', text, ts}]
     this.aiChatDrafts = new Map();  // taskId → черновик ввода чата
     this.aiChatBusy = false;
@@ -72,6 +91,18 @@ class Lms {
     this.examples = null;
     this.webviewBroken = false;
     this.warnedHomeDir = false;
+    // Панель материала (учебника) живёт отдельно от панели условия: можно
+    // читать теорию и писать решение одновременно.
+    this.materialPanel = null;
+    this.currentMaterial = null;
+    this.materialCache = new Map();
+    this.materialReady = false;
+    this.materialViewCounter = 0;
+    this.materialWatchToken = null;
+    this.materialFallback = false;
+    this.materialTextMode = false;
+    this.materialFallbackNotified = false;
+    this.materialDocUri = null;
     this.prevCodePath = null;
     this.docProvider = new LmsContentProvider(this);
     this.taskDocUri = null;
@@ -92,6 +123,9 @@ class Lms {
   }
 
   async init() {
+    // Снимок оценок прошлой сессии — чтобы дерево показывало прогресс до
+    // первого обращения к LMS (и офлайн, если сеть недоступна).
+    try { await this.primeGrades(); } catch (e) { }
     const saved = await this.context.secrets.get(SECRET_COOKIES);
     if (saved) {
       this.jar.restore(saved);
@@ -408,9 +442,16 @@ class Lms {
   }
 
   verdictText(info) {
-    if (!info) return 'Решение ещё не отправлено';
+    if (!info) {
+      // Решение могло быть отправлено, но LMS ещё не вернул сам submission:
+      // в этом случае статус решения уже записан в общую карту.
+      const t = this.currentTask;
+      const st = t ? this.statusMap.get(String(t.taskId)) : null;
+      if (st && st.badge && st.badge.desc) return st.badge.desc;
+      return 'Решение ещё не отправлено';
+    }
     const v = pick(info, 'verdict');
-    if (!v) return 'Проверяется…';
+    if (!v) return 'На проверке';
     return verdictLabel(v);
   }
 
@@ -589,13 +630,79 @@ class Lms {
   pruneViewDirs() {
     try {
       const base = path.join(os.tmpdir(), 'yandex-lms-view');
+      const week = 7 * 24 * 60 * 60 * 1000;
       for (const name of fs.readdirSync(base)) {
         const full = path.join(base, name);
         try {
-          if (fs.statSync(full).isDirectory()) fs.rmSync(full, { recursive: true, force: true });
+          const st = fs.statSync(full);
+          if (st.isDirectory()) fs.rmSync(full, { recursive: true, force: true });
+          else if (Date.now() - st.mtimeMs > week) fs.rmSync(full, { force: true });
         } catch (e) { }
       }
     } catch (e) { }
+  }
+
+  // Открытие учебника оставляет в рабочей области только его вкладку.
+  // Перед закрытием сохраняем правки, а панель материала определяем по
+  // viewType — её не закрываем даже при ошибке закрытия остальных вкладок.
+  async closeTabsForMaterial(panel) {
+    const viewType = normalizeTabViewType(panel && panel.viewType ? panel.viewType : '');
+    if (!viewType) return 0;
+    try { await vscode.workspace.saveAll(false); } catch (e) { }
+    if (!vscode.window.tabGroups || !vscode.window.tabGroups.all) return 0;
+    const tabs = [];
+    const seen = [];
+    for (const group of vscode.window.tabGroups.all) {
+      for (const tab of group.tabs) {
+        const inp = tab.input;
+        const tabViewType = normalizeTabViewType(inp && inp.viewType);
+        seen.push(tabViewType || 'other');
+        // Вкладка без input — обычно только что созданная панель, тип ещё не
+        // проставлен; такую не закрываем, иначе можно закрыть сам материал.
+        if (!inp) continue;
+        if (tabViewType === viewType) continue;
+        tabs.push(tab);
+      }
+    }
+    this.output().appendLine('LMS material: keep=' + viewType + ' tabs=[' + seen.join(', ') + ']');
+    if (!tabs.length) return 0;
+    let closed = false;
+    try { closed = await vscode.window.tabGroups.close(tabs, true); } catch (e) { closed = false; }
+    this.output().appendLine('LMS material: closed=' + closed + ' count=' + (closed ? tabs.length : 0));
+    if (!closed) {
+      this.output().appendLine('LMS: не все вкладки закрылись при открытии материала (возможно, отменено сохранение).');
+    } else {
+      // Пустая группа после закрытия вкладок кода не должна занимать половину
+      // экрана — материал раскрывается на всю ширину.
+      try { await vscode.commands.executeCommand('workbench.action.closeEmptyEditors'); } catch (e) { }
+    }
+    return closed ? tabs.length : 0;
+  }
+
+  // Текстовый материал: оставляем только его вкладку. В отличие от
+  // closeTabsForMaterial здесь нет webview-viewType, поэтому сверяем путь.
+  async closeTabsForUri(keepUri) {
+    const keep = keepUri && (keepUri.fsPath || keepUri.path);
+    if (!keep) return 0;
+    try { await vscode.workspace.saveAll(false); } catch (e) { }
+    if (!vscode.window.tabGroups || !vscode.window.tabGroups.all) return 0;
+    const tabs = [];
+    for (const group of vscode.window.tabGroups.all) {
+      for (const tab of group.tabs) {
+        const inp = tab.input;
+        if (!inp) continue;
+        const fsPath = inp.uri && (inp.uri.fsPath || inp.uri.path);
+        if (fsPath && String(fsPath) === String(keep)) continue;
+        tabs.push(tab);
+      }
+    }
+    if (!tabs.length) return 0;
+    let closed = false;
+    try { closed = await vscode.window.tabGroups.close(tabs, true); } catch (e) { closed = false; }
+    if (closed) {
+      try { await vscode.commands.executeCommand('workbench.action.closeEmptyEditors'); } catch (e) { }
+    }
+    return closed ? tabs.length : 0;
   }
 
   // Клик по иконке LMS: все вкладки редактора закрываются (изменения сохраняются),
@@ -606,7 +713,16 @@ class Lms {
     for (const group of vscode.window.tabGroups.all) {
       for (const tab of group.tabs) {
         const inp = tab.input;
-        if (inp && typeof inp.viewType === 'string' && inp.viewType.indexOf('yandexLmsTask') === 0) continue;
+        if (!inp) continue;
+        const tabViewType = normalizeTabViewType(inp && inp.viewType);
+        if (tabViewType.indexOf('yandexLmsTask') === 0 ||
+            tabViewType.indexOf('yandexLmsMaterial') === 0) continue;
+        const fsPath = inp.uri && (inp.uri.fsPath || inp.uri.path);
+        const materialDoc = !!(this.materialDocUri && fsPath &&
+            String(fsPath) === String(this.materialDocUri.fsPath || this.materialDocUri.path));
+        // Предпросмотр Markdown — отдельная вкладка и может не отдавать uri,
+        // поэтому держим его только когда материал реально открыт документом.
+        if (materialDoc || (tabViewType.indexOf('markdown.preview') === 0 && this.materialDocUri)) continue;
         tabs.push(tab);
       }
     }
@@ -794,6 +910,7 @@ class Lms {
       return;
     }
     const items = [
+      { label: '$(book) Материалы урока', cmd: 'yandexLms.openLessonMaterials' },
       { label: '$(play) Отправить решение', cmd: 'yandexLms.submit' },
       { label: '$(sync) Обновить статус', cmd: 'yandexLms.refreshStatus' },
       { label: '$(sparkle) AI: подсказки', cmd: 'yandexLms.aiHints' },
@@ -1052,15 +1169,9 @@ class Lms {
     if (!t) return;
     try {
       const r = await this.client.lessonTasks(t.courseId, t.lessonId, t.groupId);
-      const arr = asArray(r.json, ['tasks', 'items', 'data', 'results']) || [];
-      // Ответ бывает двух форм: плоский список задач или список групп с tasks.
-      // Во второй форме итерировать надо именно arr, а не r.json (объект).
-      const groups = Array.isArray(r.json) ? r.json : (arr.length && arr[0] && arr[0].tasks ? arr : [r.json]);
-      const flat = [];
-      for (const g of groups) {
-        const tasks = pick(g, 'tasks') || pick(g, 'problems') || pick(g, 'items') || [];
-        for (const x of tasks) if (x) flat.push(x);
-      }
+      const flat = flattenLessonTasks(r.json).map(x => x.task);
+      // Ответ бывает двух форм: группы по тегу с tasks и плоский список —
+      // разбор общий с деревом и ведомостью (src/util.js).
       const idx = flat.findIndex(x => String(pick(x, 'id')) === String(t.taskId));
       const next = idx >= 0 ? flat[idx + 1] : null;
       if (!next) {
@@ -1437,9 +1548,17 @@ class Lms {
   async dispose() {
     this.statusBar.dispose();
     this.taskStatusBar.dispose();
+    if (this.materialPanel) {
+      try { this.materialPanel.dispose(); } catch (e) { }
+      this.materialPanel = null;
+    }
     if (this.settingsPanel) {
       try { this.settingsPanel.dispose(); } catch (e) { }
       this.settingsPanel = null;
+    }
+    if (this.gradesPanel) {
+      try { this.gradesPanel.dispose(); } catch (e) { }
+      this.gradesPanel = null;
     }
     if (this._output) this._output.dispose();
   }
@@ -1451,5 +1570,8 @@ attachMarkers(Lms);
 attachAi(Lms);
 attachDiag(Lms);
 attachSettings(Lms);
+attachLens(Lms);
+attachMaterial(Lms);
+attachGrades(Lms);
 
 module.exports = { Lms, LmsContentProvider, SECRET_COOKIES, SECRET_LOGIN };

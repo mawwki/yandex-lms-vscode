@@ -63,3 +63,30 @@ test('нет вердикта — «не отправлено»', () => {
   assert.match(html, /pill wait/);
   assert.match(html, /не отправлено/);
 });
+
+test('решение отправлено, вердикта ещё нет — «На проверке»', () => {
+  const html = taskHtml(fakeLms(), task(''), { description: '<p>x</p>' });
+  assert.match(html, /pill wait/);
+  assert.match(html, /На проверке/);
+  assert.doesNotMatch(html, /не отправлено/);
+});
+
+test('статус uploaded из карты дерева — «На проверке» и в панели', () => {
+  const lms = fakeLms();
+  lms.statusMap = new Map([['1', {
+    type: 'uploaded',
+    verdict: '',
+    badge: { icon: 'sync', color: 'charts.yellow', desc: 'На проверке' }
+  }]]);
+  const html = taskHtml(lms, task(undefined), { description: '<p>x</p>' });
+  assert.match(html, /На проверке/);
+  assert.doesNotMatch(html, /не отправлено/);
+});
+
+test('статус accepted из карты дерева — «Зачтено» в панели', () => {
+  const lms = fakeLms();
+  lms.statusMap = new Map([['1', { type: 'accepted', verdict: 'ok' }]]);
+  const html = taskHtml(lms, task(undefined), { description: '<p>x</p>' });
+  assert.match(html, /class="pill ok"/);
+  assert.doesNotMatch(html, /не отправлено/);
+});

@@ -3,7 +3,8 @@ const assert = require('node:assert');
 const {
   stripTemplate, statusBadge, aiLint, aiExtractJson, htmlToMarkdown,
   htmlToText, mdToHtml, safeName, pick, latestSubmissionOf, escapeHtml, verdictReason,
-  sanitizeStatementHtml, parseExamples, isOkVerdict, verdictLabel
+  sanitizeStatementHtml, parseExamples, isOkVerdict, verdictLabel,
+  MATERIAL_TYPES, materialTypeLabel, materialDisplayTitle, materialReadingMinutes
 } = require('../src/util');
 
 test('stripTemplate вырезает шаблон main()', () => {
@@ -146,4 +147,33 @@ test('verdictReason не дублирует одинаковый текст', ()
   const parts = verdictReason({ compileLog: 'SyntaxError: bad input', error: 'SyntaxError: bad input' });
   assert.strictEqual(parts.length, 1);
   assert.strictEqual(parts[0].label, 'Лог компиляции');
+});
+
+// ── материалы уроков (учебники) ──
+test('materialTypeLabel переводит типы материалов LMS', () => {
+  assert.strictEqual(materialTypeLabel('textbook'), 'Учебник');
+  assert.strictEqual(materialTypeLabel(' TextBook '), 'Учебник');
+  assert.strictEqual(materialTypeLabel('article'), 'Статья');
+  assert.strictEqual(materialTypeLabel('video'), 'Видео');
+  assert.strictEqual(materialTypeLabel('unknown-type'), 'Материал');
+  assert.strictEqual(materialTypeLabel(null), 'Материал');
+  assert.strictEqual(MATERIAL_TYPES.textbook, 'Учебник');
+});
+
+test('materialDisplayTitle убирает тип из заголовка LMS', () => {
+  assert.strictEqual(materialDisplayTitle({ title: 'Учебник | Оператор for. Не будем зацикливаться на while' }), 'Оператор for. Не будем зацикливаться на while');
+  assert.strictEqual(materialDisplayTitle({ title: 'Видео: Разбор задачи' }), 'Разбор задачи');
+  assert.strictEqual(materialDisplayTitle({ title: 'Статья — Как читать код' }), 'Как читать код');
+  assert.strictEqual(materialDisplayTitle({ title: 'Просто материал' }), 'Просто материал');
+  assert.strictEqual(materialDisplayTitle({}), 'Материал');
+  // Префикс без содержательного хвоста не должен давать пустое название.
+  assert.strictEqual(materialDisplayTitle({ title: 'Учебник | ' }), 'Учебник |');
+});
+
+test('materialReadingMinutes оценивает время чтения по тексту', () => {
+  assert.strictEqual(materialReadingMinutes(''), 0);
+  assert.strictEqual(materialReadingMinutes('<p>привет мир</p>'), 1);
+  assert.strictEqual(materialReadingMinutes(('слово ').repeat(360)), 2);
+  // HTML-теги и скрипты не считаются словами.
+  assert.strictEqual(materialReadingMinutes('<script>alert(1)</script><style>p{}</style><p>одно</p>'), 1);
 });

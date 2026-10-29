@@ -95,6 +95,206 @@ function safeName(s) {
   return String(s || 'без-названия').replace(/[<>:"/\\|?*\x00-\x1F]/g, '_').replace(/\s+/g, ' ').trim().slice(0, 120);
 }
 
+// ── материалы уроков (учебники) ──
+const MATERIAL_TYPES = {
+  textbook: 'Учебник',
+  article: 'Статья',
+  video: 'Видео',
+  audio: 'Аудио',
+  presentation: 'Презентация',
+  file: 'Файл'
+};
+
+function materialTypeLabel(type) {
+  const k = String(type == null ? '' : type).trim().toLowerCase();
+  return MATERIAL_TYPES[k] || 'Материал';
+}
+
+// LMS кладёт тип в заголовок: «Учебник | Оператор for…». В дереве и панели
+// показываем только тему — тип виден отдельной подписью.
+function materialDisplayTitle(material) {
+  const raw = String(pick(material, 'title') || '').trim();
+  if (!raw) return 'Материал';
+  for (const label of Object.values(MATERIAL_TYPES)) {
+    for (const sep of [' | ', ': ', ' — ', ' – ', ' - ']) {
+      const prefix = label + sep;
+      if (raw.toLowerCase().startsWith(prefix.toLowerCase())) {
+        const rest = raw.slice(prefix.length).trim();
+        if (rest) return rest;
+      }
+    }
+  }
+  return raw;
+}
+
+// Оценка времени чтения: 180 слов в минуту — средний темп для учебного текста.
+function materialReadingMinutes(html) {
+  const words = (htmlToText(html).match(/[A-Za-zА-Яа-яЁё0-9]+/g) || []).length;
+  if (!words) return 0;
+  return Math.max(1, Math.round(words / 180));
+}
+
+// Русская плюрализация: «1 день», «2 дня», «5 дней».
+function ruPlural(n, one, few, many) {
+  const v = Math.abs(Math.trunc(Number(n) || 0));
+  const m10 = v % 10;
+  const m100 = v % 100;
+  if (m10 === 1 && m100 !== 11) return one;
+  if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few;
+  return many;
+}
+
+const DAY_MS = 86400000;
+
+function deadlineDate(value) {
+  if (!value) return null;
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+// «11 января 2027 г.» — в интерфейсе показываем дату, а не сырое ISO
+// «2027-01-10T23:30:00+03:00», которое отдаёт API. Суффикс «г.» ru-RU
+// добавляет сам, второй раз приписывать не надо.
+function fmtDateRu(value) {
+  const d = deadlineDate(value);
+  if (!d) return '';
+  return d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' });
+}
+
+// Дедлайн по-человечески: дата + короткий счётчик до него.
+// state: none | overdue | soon | open (soon — осталось ≤ 3 суток).
+function deadlineInfo(value, now) {
+  const d = deadlineDate(value);
+  if (!d) return { state: 'none', when: '', hint: '', days: null };
+  const t = now === undefined ? Date.now() : now;
+  const diff = d.getTime() - t;
+  const when = fmtDateRu(d);
+  if (diff < 0) {
+    const days = Math.max(1, Math.floor(-diff / DAY_MS));
+    return { date: d, state: 'overdue', when, days: -days, hint: 'просрочено на ' + days + ' ' + ruPlural(days, 'день', 'дня', 'дней') };
+  }
+  const days = Math.max(1, Math.ceil(diff / DAY_MS));
+  if (days <= 3) {
+    return { date: d, state: 'soon', when, days, hint: 'осталось ' + days + ' ' + ruPlural(days, 'день', 'дня', 'дней') };
+  }
+  return { date: d, state: 'open', when, days, hint: '' };
+}
+
+// Полоска прогресса: ▰▰▰▱▱▱▱▱. Пусто, если знаменателя нет — иначе
+// дерево врёт про «0%» там, где задач просто нет.
+function progressBar(done, total, width) {
+  const w = Math.max(1, Number(width) || 8);
+  const t = Number(total) || 0;
+  if (!t) return '';
+  const d = Math.max(0, Math.min(t, Number(done) || 0));
+  const filled = Math.round((d / t) * w);
+  return '▰'.repeat(filled) + '▱'.repeat(w - filled);
+}
+
+// ── оценки ──
+// Иконка бейджа — тот же признак, что и в дереве: своё состояние задачи
+// выводим из него, чтобы панель и дерево никогда не расходились.
+const GRADE_STATES = {
+  pass: 'passed',
+  warning: 'partial',
+  sync: 'pending',
+  edit: 'rework',
+  error: 'failed',
+  code: 'unsolved'
+};
+
+const GRADE_LABELS = {
+  passed: 'Зачтено',
+  partial: 'Частично зачтено',
+  pending: 'На проверке',
+  rework: 'На доработку',
+  failed: 'Ошибка',
+  unsolved: 'Не решено'
+};
+
+const PASSED_STATES = ['passed', 'partial'];
+
+// Одна строка ведомости: задача + её статус (статус передаём из
+// lms.statusOf, чтобы не дублировать разбор solution/status).
+function gradeRow(task, status, now) {
+  if (!task) return null;
+  const icon = status && status.badge ? status.badge.icon : 'code';
+  const state = GRADE_STATES[icon] || 'unsolved';
+  const scoreMax = Number(pick(task, 'scoreMax', 'score_max'));
+  const rawScore = status ? pick(status, 'score') : undefined;
+  const score = Number.isFinite(Number(rawScore)) ? Number(rawScore) : undefined;
+  const tag = pick(task, 'tag');
+  return {
+    id: pick(task, 'id'),
+    title: pick(task, 'title') || pick(task, 'shortTitle', 'short_title') || 'Задача',
+    state,
+    label: GRADE_LABELS[state] || 'Не решено',
+    score,
+    scoreMax: Number.isFinite(scoreMax) ? scoreMax : 0,
+    optional: !!(pick(task, 'isOptional', 'is_optional')),
+    typeName: pick(task, 'tagType') || (tag ? pick(tag, 'type') : '') || '',
+    deadline: deadlineInfo(pick(task, 'deadline'), now)
+  };
+}
+
+// Итог по списку строк: сколько зачтено, сколько баллов, что горит.
+// Просроченными считаем только незачтённые обязательные задачи —
+// дополнительная задача к дедлайну балл не теряет, а зачтённая уже сдана.
+function summarizeGrades(rows) {
+  const list = Array.isArray(rows) ? rows.filter(Boolean) : [];
+  const s = {
+    total: list.length, passed: 0, partial: 0, pending: 0, rework: 0, failed: 0, unsolved: 0,
+    optional: 0, overdue: 0, score: 0, scoreMax: 0, hasScore: false
+  };
+  for (const r of list) {
+    if (s[r.state] !== undefined) s[r.state]++;
+    if (r.optional) s.optional++;
+    if (Number.isFinite(r.score)) s.score += r.score;
+    if (Number.isFinite(r.scoreMax)) { s.scoreMax += r.scoreMax; s.hasScore = true; }
+    if (!r.optional && PASSED_STATES.indexOf(r.state) < 0 && r.deadline && r.deadline.state === 'overdue') s.overdue++;
+  }
+  s.required = list.filter(r => !r.optional).length;
+  s.percent = s.total ? Math.round((s.passed / s.total) * 100) : 0;
+  return s;
+}
+
+// Строка для дерева: «▰▰▱▱▱▱▱▱ 3/10 · 25/70 б.»
+function progressLine(summary, width) {
+  if (!summary || !summary.total) return '';
+  const bar = progressBar(summary.passed, summary.total, width || 6);
+  const parts = [bar + ' ' + summary.passed + '/' + summary.total];
+  if (summary.hasScore && summary.scoreMax) parts.push(roundScore(summary.score) + '/' + summary.scoreMax + ' б.');
+  if (summary.overdue) parts.push('просрочено ' + summary.overdue);
+  return parts.filter(Boolean).join(' · ');
+}
+
+// Баллы приходят дробными (рейтинг 7.0088…); в интерфейсе — до целого,
+// если дробная часть значима, оставляем один знак.
+function roundScore(n) {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return 0;
+  return Math.abs(v - Math.round(v)) < 0.05 ? Math.round(v) : Math.round(v * 10) / 10;
+}
+
+// Задачи урока: API отдаёт и группы по тегу ([{type, tasks: […]}]), и
+// плоский список. Разбор один на всех — дерево, ведомость и «следующая задача».
+function flattenLessonTasks(json) {
+  const arr = asArray(json, ['tasks', 'items', 'data', 'results']) || [];
+  const groups = Array.isArray(json) ? json : (arr.length && arr[0] && arr[0].tasks ? arr : [json]);
+  const out = [];
+  for (const g of groups) {
+    if (!g || typeof g !== 'object') continue;
+    const tasks = pick(g, 'tasks') || pick(g, 'problems') || pick(g, 'items');
+    if (Array.isArray(tasks)) {
+      const typeName = pick(g, 'type') || pick(g, 'title') || '';
+      for (const t of tasks) if (t) out.push({ task: t, typeName });
+    } else if (pick(g, 'id') !== undefined) {
+      out.push({ task: g, typeName: '' });
+    }
+  }
+  return out;
+}
+
 function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
 }
@@ -431,5 +631,8 @@ module.exports = {
   VERDICTS, pick, asArray, latestSubmissionOf, verdictReason, safeName, sleep, escapeHtml,
   statusBadge, stripTemplate, LMS_TEMPLATES, decodeEntities, htmlToMarkdown,
   htmlToText, mdToHtml, mdToPlainText, runProcess, runProcessInput, AI_FORBIDDEN, aiLint, aiExtractJson,
-  normalizeOutput, parseExamples, sanitizeStatementHtml, verdictKey, isOkVerdict, verdictLabel
+  normalizeOutput, parseExamples, sanitizeStatementHtml, verdictKey, isOkVerdict, verdictLabel,
+  MATERIAL_TYPES, materialTypeLabel, materialDisplayTitle, materialReadingMinutes,
+  ruPlural, deadlineDate, fmtDateRu, deadlineInfo, progressBar,
+  GRADE_STATES, GRADE_LABELS, PASSED_STATES, gradeRow, summarizeGrades, progressLine, roundScore, flattenLessonTasks
 };

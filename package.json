@@ -1,8 +1,8 @@
 {
   "name": "yandex-lms",
   "displayName": "Яндекс LMS",
-  "description": "Полный доступ к LMS Яндекса (lms.yandex.ru) внутри VS Code: условие слева, код справа, отправка решения одной клавишей, ИИ-помощник (API-ключи и OpenCode CLI)",
-  "version": "2.5.3",
+  "description": "Полный доступ к LMS Яндекса (lms.yandex.ru) внутри VS Code: учебники и материалы уроков, условие слева, код справа, отправка решения одной клавишей, ИИ-помощник (API-ключи и OpenCode CLI)",
+  "version": "2.8.0",
   "publisher": "local",
   "license": "MIT",
   "engines": {
@@ -54,8 +54,42 @@
         "category": "Яндекс LMS"
       },
       {
+        "command": "yandexLms.grades",
+        "title": "Мои оценки (прогресс и баллы по курсу)",
+        "category": "Яндекс LMS",
+        "icon": "$(graph)"
+      },
+      {
         "command": "yandexLms.openTask",
         "title": "Открыть задание (условие + редактор)",
+        "category": "Яндекс LMS"
+      },
+      {
+        "command": "yandexLms.openMaterial",
+        "title": "Читать материал урока",
+        "category": "Яндекс LMS",
+        "icon": "$(book)"
+      },
+      {
+        "command": "yandexLms.openLessonMaterials",
+        "title": "Материалы урока",
+        "category": "Яндекс LMS",
+        "icon": "$(book)"
+      },
+      {
+        "command": "yandexLms.materialInBrowser",
+        "title": "Открыть материал в браузере",
+        "category": "Яндекс LMS",
+        "icon": "$(link-external)"
+      },
+      {
+        "command": "yandexLms.materialText",
+        "title": "Материал — текстом",
+        "category": "Яндекс LMS"
+      },
+      {
+        "command": "yandexLms.materialPanel",
+        "title": "Материал — панелью",
         "category": "Яндекс LMS"
       },
       {
@@ -77,6 +111,12 @@
         "command": "yandexLms.openInBrowser",
         "title": "Открыть задание в браузере",
         "category": "Яндекс LMS"
+      },
+      {
+        "command": "yandexLms.lens",
+        "title": "Google Объектив: снимок задания",
+        "category": "Яндекс LMS",
+        "icon": "$(device-camera)"
       },
       {
         "command": "yandexLms.welcome",
@@ -218,6 +258,10 @@
       {
         "command": "yandexLms.openTask",
         "key": "ctrl+alt+t"
+      },
+      {
+        "command": "yandexLms.lens",
+        "key": "ctrl+alt+g"
       }
     ],
     "menus": {
@@ -246,13 +290,38 @@
           "command": "yandexLms.settings",
           "when": "view == yandexLms.tree",
           "group": "navigation@4"
+        },
+        {
+          "command": "yandexLms.grades",
+          "when": "view == yandexLms.tree",
+          "group": "1_progress@0"
         }
       ],
       "view/item/context": [
         {
+          "command": "yandexLms.grades",
+          "when": "view == yandexLms.tree && viewItem == lmsCourse",
+          "group": "lms@0"
+        },
+        {
           "command": "yandexLms.loginQr",
           "when": "view == yandexLms.tree",
           "group": "lms@1"
+        },
+        {
+          "command": "yandexLms.openLessonMaterials",
+          "when": "view == yandexLms.tree && viewItem == lmsLesson",
+          "group": "lms@2"
+        },
+        {
+          "command": "yandexLms.openMaterial",
+          "when": "view == yandexLms.tree && viewItem == lmsMaterial",
+          "group": "lms@2"
+        },
+        {
+          "command": "yandexLms.materialInBrowser",
+          "when": "view == yandexLms.tree && viewItem == lmsMaterial",
+          "group": "lms@3"
         },
         {
           "command": "yandexLms.submit",
@@ -419,6 +488,26 @@
           "type": "number",
           "default": 3,
           "description": "Сколько ключей из пула пробовать за один запрос, прежде чем сдаться"
+        },
+        "yandexLms.lens.openIn": {
+          "type": "string",
+          "enum": [
+            "browser",
+            "panel"
+          ],
+          "default": "browser",
+          "enumDescriptions": [
+            "Открыть результат в браузере по умолчанию",
+            "Показать снимок и ссылку в панели VS Code (Google не даёт встраивать страницу результатов)"
+          ],
+          "description": "Куда открывать результат Google Объектива"
+        },
+        "yandexLms.lens.scale": {
+          "type": "number",
+          "default": 2,
+          "minimum": 1,
+          "maximum": 3,
+          "description": "Качество снимка условия для Объектива (масштаб растрирования, 1–3)"
         }
       }
     },

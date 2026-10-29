@@ -4,7 +4,7 @@
 // есть ручные команды «показать текстом» и «перезагрузить webview».
 const vscode = require('vscode');
 const crypto = require('crypto');
-const { pick, escapeHtml, mdToHtml, verdictReason, sanitizeStatementHtml, isOkVerdict } = require('./util');
+const { pick, escapeHtml, mdToHtml, verdictReason, sanitizeStatementHtml, isOkVerdict, statusBadge } = require('./util');
 const { webviewLog } = require('./diag');
 
 const TASK_VIEW_TYPE = 'yandexLmsTask';
@@ -31,19 +31,46 @@ function shortVerdict(v) {
   return SHORT_VERDICTS[k] || String(v);
 }
 
-function statusPill(t) {
+function statusPill(lms, t) {
   const v = t.verdictInfo ? pick(t.verdictInfo, 'verdict') : null;
-  if (!t.verdictInfo || !v) {
-    return '<span class="pill wait"><i class="dot"></i>не отправлено</span>';
-  }
   // LMS отдаёт «ok» строчными — раньше это давало красную плашку «ok».
-  if (isOkVerdict(v)) {
+  if (v && isOkVerdict(v)) {
     return '<span class="pill ok" title="Решение верное"><i class="dot"></i>Зачтено</span>';
   }
-  const label = shortVerdict(v);
-  // Плашка кликабельна: причина (stderr, лог компиляции, ввод/вывод теста)
-  // уже лежит в логах проверки — по клику раскрываем её прямо под шапкой.
-  return '<button type="button" class="pill fail clickable" data-act="verdictReason" aria-expanded="false" title="Показать причину: ' + escapeHtml(String(v)) + '"><i class="dot"></i>' + escapeHtml(label) + '<span class="caret">▾</span></button>';
+  if (v) {
+    const label = shortVerdict(v);
+    // Плашка кликабельна: причина (stderr, лог компиляции, ввод/вывод теста)
+    // уже лежит в логах проверки — по клику раскрываем её прямо под шапкой.
+    return '<button type="button" class="pill fail clickable" data-act="verdictReason" aria-expanded="false" title="Показать причину: ' + escapeHtml(String(v)) + '"><i class="dot"></i>' + escapeHtml(label) + '<span class="caret">▾</span></button>';
+  }
+  // Вердикта ещё нет, но решение на сервере уже есть — значит, оно ждёт
+  // проверки. Иначе панель показывала «не отправлено» при «На проверке»
+  // в дереве (задание 88736, 27.10.2026).
+  if (t.verdictInfo) {
+    return '<span class="pill wait" title="Решение отправлено и ждёт проверки в LMS"><i class="dot"></i>На проверке</span>';
+  }
+  // У detail нет latestSubmission, но статус решения уже известен дереву:
+  // берём его из общей карты статусов, чтобы панель не противоречила списку.
+  let st = null;
+  try { st = lms && lms.statusMap ? lms.statusMap.get(String(t.taskId)) : null; } catch (e) { }
+  const type = st && st.type ? String(st.type).toLowerCase() : '';
+  if (type && type !== 'new' && type !== 'draft') {
+    const badge = (st && st.badge) || statusBadge(type, st && st.verdict);
+    const desc = (badge && badge.desc) || '';
+    if (badge && badge.icon === 'pass') {
+      return '<span class="pill ok" title="Решение верное"><i class="dot"></i>Зачтено</span>';
+    }
+    if (desc === 'На проверке') {
+      return '<span class="pill wait" title="Решение отправлено и ждёт проверки в LMS"><i class="dot"></i>На проверке</span>';
+    }
+    if (desc === 'На доработку' || desc === 'Ошибка, на доработку') {
+      return '<span class="pill fail" title="' + escapeHtml(desc) + '"><i class="dot"></i>' + escapeHtml(desc) + '</span>';
+    }
+    if (desc === 'Частично зачтено') {
+      return '<span class="pill wait"><i class="dot"></i>' + escapeHtml(desc) + '</span>';
+    }
+  }
+  return '<span class="pill wait"><i class="dot"></i>не отправлено</span>';
 }
 
 // Блок «почему не зачтено»: раскрывается кликом по плашке вердикта.
@@ -85,7 +112,14 @@ const ICON_PATHS = {
   phone: '<rect x="4.5" y="1.5" width="7" height="13" rx="1.5"/><path d="M7 12.5h2"/>',
   key: '<circle cx="5" cy="10" r="2.7"/><path d="M7 8l6-6M10.5 4.5l1.8 1.8M8.8 6.2l1.5 1.5"/>',
   gear: '<path d="M2.2 4.6h11.6M2.2 8h11.6M2.2 11.4h11.6"/><circle cx="5.6" cy="4.6" r="1.7"/><circle cx="10.4" cy="8" r="1.7"/><circle cx="4.6" cy="11.4" r="1.7"/>',
-  cookie: '<circle cx="8" cy="8" r="6.3"/><circle cx="6" cy="6.5" r=".4"/><circle cx="9.8" cy="7.5" r=".4"/><circle cx="7.5" cy="10.3" r=".4"/>'
+  cookie: '<circle cx="8" cy="8" r="6.3"/><circle cx="6" cy="6.5" r=".4"/><circle cx="9.8" cy="7.5" r=".4"/><circle cx="7.5" cy="10.3" r=".4"/>',
+  book: '<path d="M2.8 3h4c.7 0 1.2.5 1.2 1.2v8.6c0-.6-.5-1.1-1.2-1.1H2.8z"/><path d="M13.2 3h-4c-.7 0-1.2.5-1.2 1.2v8.6c0-.6.5-1.1 1.2-1.1h4z"/>',
+  external: '<path d="M6.8 3.2H3.4v9.4h9.4V9.2"/><path d="M9.6 2.8h3.6v3.6"/><path d="M13.1 2.9 7.6 8.4"/>',
+  refresh: '<path d="M13.2 7.9a5.2 5.2 0 1 1-1.5-3.7"/><path d="M13.3 2.4v3.5h-3.5"/>',
+  copy: '<rect x="5.4" y="5.4" width="7.2" height="7.9" rx="1.2"/><path d="M10.6 3.5H4.3c-.6 0-1.1.5-1.1 1.1v7.1"/>',
+  clock: '<circle cx="8" cy="8" r="5.8"/><path d="M8 4.7V8l2.3 1.4"/>',
+  left: '<path d="M10 3.6 5.6 8 10 12.4"/>',
+  right: '<path d="M6 3.6 10.4 8 6 12.4"/>'
 };
 
 function ic(name, size) {
@@ -105,6 +139,11 @@ function taskHtml(lms, t, detail) {
   const webview = lms.panel ? lms.panel.webview : null;
   const csp = webview ? webview.cspSource : '';
   const n = nonce();
+  // html2canvas рисует DOM прямо в canvas и не использует SVG/foreignObject,
+  // который в Electron делает canvas «испорченным» даже без картинок.
+  const h2cUri = webview && lms.context && lms.context.extensionUri
+    ? webview.asWebviewUri(vscode.Uri.joinPath(lms.context.extensionUri, 'media', 'html2canvas.min.js')).toString()
+    : '';
   let statement = pick(detail, 'description', 'statement', 'content');
   if (lms.currentStatementHtml) statement = lms.currentStatementHtml;
   if (!statement) {
@@ -130,8 +169,10 @@ function taskHtml(lms, t, detail) {
   const metaLine = metaBits.join('<span class="sep">·</span>');
 
   const actions = t.isMarkers
-    ? '<button data-act="next" class="btn secondary">Следующая задача →</button><button data-act="browser" class="btn secondary">Открыть в браузере</button>'
-    : '<button data-act="pull" class="btn secondary">Забрать из LMS</button><button data-act="refresh" class="btn secondary">Обновить статус</button><button data-act="next" class="btn secondary">Следующая задача →</button><button data-act="browser" class="btn secondary">Открыть в браузере</button>';
+    ? '<button data-act="next" class="btn secondary">Следующая задача →</button><button data-act="browser" class="btn secondary">Открыть в браузере</button>' +
+      '<button data-act="lens" class="btn secondary" title="Ctrl+Alt+G — снимок условия в Google Объектив">Объектив</button>'
+    : '<button data-act="pull" class="btn secondary">Забрать из LMS</button><button data-act="refresh" class="btn secondary">Обновить статус</button><button data-act="next" class="btn secondary">Следующая задача →</button><button data-act="browser" class="btn secondary">Открыть в браузере</button>' +
+      '<button data-act="lens" class="btn secondary" title="Ctrl+Alt+G — снимок условия в Google Объектив">Объектив</button>';
 
   // Чипы — тонкий ряд действий внутри чата (настройки ИИ — в статус-баре и палитре).
   const aiChips = t.isMarkers
@@ -151,8 +192,8 @@ function taskHtml(lms, t, detail) {
 <html lang="ru">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${csp} 'unsafe-inline'; img-src ${csp} https: data:; script-src 'nonce-${n}';">
-<style>
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${csp} 'unsafe-inline'; img-src ${csp} https: data: blob:; script-src 'nonce-${n}' ${csp};">
+<style id="lms-panel-style">
   :root { color-scheme: dark light; }
   * { box-sizing: border-box; }
   body { font-family: var(--vscode-font-family); color: var(--vscode-foreground, #cccccc); background: var(--vscode-editor-background, transparent); margin: 0; line-height: 1.55; }
@@ -320,7 +361,7 @@ function taskHtml(lms, t, detail) {
   <div class="topbar">
     <div class="tb-title" title="${escapeHtml(t.taskTitle)}">${escapeHtml(t.taskTitle)}</div>
     <div class="tb-right">
-      ${statusPill(t)}
+      ${statusPill(lms, t)}
       ${t.isMarkers ? '' : '<button data-act="submit" class="btn primary sm" title="Ctrl+Alt+S">Отправить решение</button>'}
       <button data-act="settings" class="btn secondary sm icon" title="Настройки (ключи, ИИ, папки)" aria-label="Настройки">${ic('gear')}</button>
     </div>
@@ -336,6 +377,7 @@ function taskHtml(lms, t, detail) {
     ${lms.pep8Html ? lms.pep8Html() : ''}
     ${t.isMarkers ? lms.markersPanelHtml() : `<div class="statement">${safeStatement}</div>`}
   </div>
+${h2cUri ? `<script nonce="${n}" src="${escapeHtml(h2cUri)}"></script>` : ''}
 <script nonce="${n}">
   const vscode = acquireVsCodeApi();
   function collectAnswer() {
@@ -354,6 +396,186 @@ function taskHtml(lms, t, detail) {
     });
     return answer;
   }
+  // ── снимок условия для Google Объектива (Ctrl+Alt+G) ──
+  // Клонируем условие в блок шириной 900px и отдаём html2canvas. Он рисует
+  // DOM напрямую в canvas, без SVG/foreignObject (тот в Electron «портит»
+  // canvas даже без единой картинки). Снимок не зависит от того, какое окно
+  // сверху, и не тащит интерфейс редактора.
+
+  // Убираем из инлайн-стилей всё, что может подгрузить внешний ресурс:
+  // @import, @font-face и url(...). Иначе canvas станет «испорченным».
+  function lensSafeCss(css) {
+    let s = String(css || '')
+      .replace(/@import[^;]+;/gi, '')
+      .replace(/@font-face[^{]*{[^}]*}/gi, '');
+    let i;
+    while ((i = s.toLowerCase().indexOf('url(')) >= 0) {
+      const j = s.indexOf(')', i + 4);
+      if (j < 0) { s = s.slice(0, i); break; }
+      s = s.slice(0, i) + 'none' + s.slice(j + 1);
+    }
+    return s;
+  }
+
+  function lensBackground() {
+    const v = getComputedStyle(document.documentElement).getPropertyValue('--vscode-editor-background').trim();
+    return v || '#1e1e1e';
+  }
+
+  function lensPlaceholder(im) {
+    const ph = document.createElement('div');
+    ph.textContent = 'картинка не встроилась';
+    ph.setAttribute('style', 'padding:8px 10px;border:1px dashed currentColor;border-radius:6px;font-size:.85em;opacity:.7');
+    if (im.parentNode) im.parentNode.replaceChild(ph, im);
+  }
+
+  // Убираем всё, что может подгрузить внешний ресурс и «испортить» canvas:
+  // картинки, SVG-ссылки, видео, фоны, @import и url(...) в инлайн-стилях.
+  function lensCleanNode(root) {
+    root.querySelectorAll('script, style, link, meta, base, iframe, object, embed, video, audio, source, track, picture, canvas, image, use, feImage')
+      .forEach(function (el) { el.remove(); });
+    root.querySelectorAll('*').forEach(function (el) {
+      ['srcset', 'poster', 'background', 'lowsrc', 'dynsrc'].forEach(function (a) { el.removeAttribute(a); });
+      const style = el.getAttribute('style');
+      if (style) {
+        const clean = lensSafeCss(style);
+        if (clean.trim()) el.setAttribute('style', clean);
+        else el.removeAttribute('style');
+      }
+      if (el.tagName.toLowerCase() !== 'img') el.removeAttribute('src');
+      if (el.namespaceURI === 'http://www.w3.org/2000/svg') {
+        const href = el.getAttribute('href') || el.getAttribute('xlink:href') || '';
+        if (href && href.charAt(0) !== '#') {
+          el.removeAttribute('href');
+          el.removeAttribute('xlink:href');
+        }
+      }
+    });
+  }
+
+  // Последний рубеж: рисуем текст условия прямо на canvas. Такой снимок не
+  // может быть «испорченным» — в нём нет ни одной внешней ссылки.
+  function lensTextShot(token, text) {
+    try {
+      const raw = String(text || 'Условие задания');
+      const src = raw.replace(String.fromCharCode(13), '').split(String.fromCharCode(10));
+      const lines = [];
+      src.forEach(function (line) {
+        if (!line) { lines.push(''); return; }
+        for (let i = 0; i < line.length; i += 96) lines.push(line.slice(i, i + 96));
+      });
+      const shown = lines.slice(0, 1000);
+      const width = 1200;
+      const pad = 42;
+      const lh = 27;
+      const height = Math.min(32000, Math.max(220, pad * 2 + shown.length * lh));
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, width, height);
+      ctx.fillStyle = '#111111';
+      ctx.font = '18px monospace';
+      ctx.textBaseline = 'top';
+      shown.forEach(function (line, i) { ctx.fillText(line, pad, pad + i * lh); });
+      vscode.postMessage({ type: 'lensImage', token: token, dataUrl: canvas.toDataURL('image/png'), width: width, height: height });
+    } catch (e) {
+      vscode.postMessage({ type: 'lensImage', token: token, error: String((e && e.message) || e) });
+    }
+  }
+
+  function lensPostCanvas(token, canvas, text) {
+    try {
+      vscode.postMessage({
+        type: 'lensImage', token: token, dataUrl: canvas.toDataURL('image/png'),
+        width: canvas.width, height: canvas.height
+      });
+    } catch (e) {
+      lensTextShot(token, text);
+    }
+  }
+
+  // html2canvas рисует DOM в canvas без SVG/foreignObject. Он не «портит»
+  // canvas, если заранее убрать внешние картинки и url(...) из стилей.
+  // При любом сбое остаётся текстовый снимок — Объектив не должен молчать.
+  function lensRender(token, box, width, height, scale, text) {
+    const finish = function () {
+      try { if (box.parentNode) box.parentNode.removeChild(box); } catch (e) { }
+    };
+    if (typeof html2canvas !== 'function') {
+      finish();
+      lensTextShot(token, text);
+      return;
+    }
+    let s = Math.min(Math.max(Number(scale) || 2, 1), 3);
+    const maxPixels = 24000000;
+    if (width * height * s * s > maxPixels) s = Math.sqrt(maxPixels / (width * height));
+    s = Math.max(1, Math.min(s, 3));
+    const base = {
+      logging: false,
+      useCORS: false,
+      allowTaint: false,
+      width: width,
+      height: height,
+      windowWidth: width,
+      windowHeight: height,
+      scrollX: 0,
+      scrollY: 0
+    };
+    html2canvas(box, Object.assign({}, base, { backgroundColor: lensBackground(), scale: s }))
+      .then(function (canvas) {
+        finish();
+        lensPostCanvas(token, canvas, text);
+      }, function () {
+        // Второй заход — белый фон и масштаб 1: некоторые темы и тени
+        // html2canvas не переваривает, а условие всё равно должно уйти.
+        html2canvas(box, Object.assign({}, base, { backgroundColor: '#ffffff', scale: 1 }))
+          .then(function (canvas) { finish(); lensPostCanvas(token, canvas, text); },
+            function () { finish(); lensTextShot(token, text); });
+      });
+  }
+
+  function lensSnapshot(token, scale) {
+    let box = null;
+    try {
+      const wrap = document.querySelector('.wrap');
+      if (!wrap) throw new Error('нет панели условия');
+      box = document.createElement('div');
+      box.className = 'wrap lens-shot';
+      box.setAttribute('style', 'position:fixed;left:-20000px;top:0;width:900px;max-width:none;padding:26px 30px;box-sizing:border-box;');
+      ['h1', '.meta'].forEach(function (sel) {
+        const el = wrap.querySelector(sel);
+        if (el) box.appendChild(el.cloneNode(true));
+      });
+      const body = wrap.querySelector('.statement') || wrap.querySelector('.markers-question');
+      if (!body) throw new Error('условие не найдено');
+      box.appendChild(body.cloneNode(true));
+      // Интерактив в снимке не нужен: кнопки, поля, чат и причины сбоя убираем.
+      box.querySelectorAll('button, input, textarea, select, .ai-block, .actions, .verdict-reason, .send-row, .chip')
+        .forEach(function (el) { el.remove(); });
+      lensCleanNode(box);
+      // Только растровые data:-картинки безопасны для canvas. Внешние и SVG
+      // заменяем подписью: SVG может ссылаться на внешние ресурсы.
+      box.querySelectorAll('img').forEach(function (im) {
+        const src = im.getAttribute('src') || '';
+        if (src.indexOf('data:image/') === 0 && src.indexOf('data:image/svg') !== 0) return;
+        lensPlaceholder(im);
+      });
+      document.body.appendChild(box);
+      const height = Math.min(14000, Math.max(80, Math.ceil(box.getBoundingClientRect().height)));
+      lensRender(token, box, 900, height, scale, box.innerText || '');
+    } catch (e) {
+      try { if (box && box.parentNode) box.parentNode.removeChild(box); } catch (e2) { }
+      vscode.postMessage({ type: 'lensImage', token: token, error: String((e && e.message) || e) });
+    }
+  }
+
+  window.addEventListener('message', function (ev) {
+    const m = ev.data || {};
+    if (m.type === 'lensSnapshot') lensSnapshot(m.token, Math.min(Math.max(Number(m.scale) || 2, 1), 3));
+  });
+
   document.addEventListener('click', ev => {
     const el = ev.target.closest('[data-act]');
     if (!el) return;
@@ -452,10 +674,13 @@ function taskHtml(lms, t, detail) {
 }
 
 function attachPanel(panel, lms) {
-  webviewLog('created', { viewType: panel.viewType });
+  // viewType нельзя читать после dispose — сохраняем его заранее, иначе
+  // обработчик закрытия падает и lms.panel остаётся ссылкой на мёртвую панель.
+  const panelViewType = panel.viewType;
+  webviewLog('created', { viewType: panelViewType });
   panel.onDidDispose(() => {
-    webviewLog('disposed', { viewType: panel.viewType });
     if (lms.panel === panel) lms.panel = null;
+    webviewLog('disposed', { viewType: panelViewType });
   });
   panel.webview.onDidReceiveMessage(async msg => {
     const type = msg && msg.type;
@@ -466,9 +691,15 @@ function attachPanel(panel, lms) {
       lms.setWebviewBroken(false);
       return;
     }
+    // Снимок условия для Google Объектива приходит из webview.
+    if (type === 'lensImage') {
+      try { lms.lensImage(msg); } catch (e) { }
+      return;
+    }
     if (!lms.currentTask) return;
     const map = {
       submit: () => lms.submitCurrent(),
+      lens: () => lms.lensTask(),
       refresh: () => lms.reloadCurrentTask(),
       browser: () => lms.openCurrentInBrowser(),
       next: () => lms.openNextTask(),
@@ -541,10 +772,21 @@ function attach(Lms) {
         this.openPanel(t, detail);
       } else {
         this.panelAttempt = 0;
+        this.setWebviewBroken(true);
         await this.showTaskDoc();
         if (!this.fallbackNotified) {
           this.fallbackNotified = true;
-          vscode.window.showInformationMessage('LMS: webview так и не загрузился (баг VS Code #342842) — условие показано текстом. Кнопки вернутся при следующем открытии задачи.');
+          const pending = vscode.window.showWarningMessage(
+            'LMS: webview так и не загрузился (баг VS Code #342842) — условие показано текстом. Кнопки вернутся после починки webview.',
+            'Починить webview'
+          );
+          if (pending && typeof pending.then === 'function') {
+            pending.then(choice => {
+              if (choice === 'Починить webview') {
+                vscode.commands.executeCommand('yandexLms.fixWebviewProfile').then(undefined, () => { });
+              }
+            }, () => { });
+          }
         }
       }
     }, WATCHDOG_MS);
@@ -590,13 +832,20 @@ function attach(Lms) {
       this.openPanel(t, detail);
       return;
     }
-    this.panel.title = t.taskTitle;
     try {
+      this.panel.title = t.taskTitle;
       this.panel.webview.html = taskHtml(this, t, detail);
     } catch (e) {
       this.output().appendLine('Панель не обновилась: ' + (e.message || e));
+      // Панель уже закрыта (например, при открытии материала), но ссылка
+      // ещё не успела очиститься — пересоздаём, иначе задача не откроется.
+      if (/disposed/i.test(String(e && e.message || e))) {
+        this.panel = null;
+        this.panelReady = false;
+        this.openPanel(t, detail);
+      }
     }
   };
 }
 
-module.exports = { attach, taskHtml, TASK_VIEW_TYPE, ic };
+module.exports = { attach, taskHtml, TASK_VIEW_TYPE, ic, attachPanel };

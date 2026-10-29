@@ -1,6 +1,9 @@
-// Дерево: курсы → уроки → задания.
+// Дерево: курсы → уроки → материалы и задания.
 const vscode = require('vscode');
-const { pick, asArray } = require('./util');
+const {
+  pick, asArray, materialTypeLabel, materialDisplayTitle,
+  flattenLessonTasks, gradeRow, progressLine, deadlineInfo, roundScore
+} = require('./util');
 const { debugEnabled } = require('./cfg');
 const fs = require('fs');
 const path = require('path');
@@ -12,6 +15,20 @@ function errorItem(message, detail) {
   item.tooltip = detail ? String(detail).slice(0, 1500) : message;
   item.command = { command: 'yandexLms.diagnose', title: 'Диагностика API' };
   return item;
+}
+
+// Прогресс живёт в кэше Lms: он обновляется при раскрытии урока (из того же
+// lessonTasks) и при сборе ведомости, поэтому полоска в дереве появляется
+// без ожидания сети и переживает перезагрузку окна.
+function progressOf(lms, mapName, id) {
+  const map = lms && lms[mapName];
+  if (!map || typeof map.get !== 'function' || id === undefined || id === null) return null;
+  try { return map.get(String(id)) || null; } catch (e) { return null; }
+}
+
+function updatedText(ts) {
+  if (!ts) return '';
+  return new Date(ts).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
 }
 
 class LmsTreeProvider {
@@ -64,28 +81,40 @@ class LmsTreeProvider {
     if (el instanceof LessonNode) {
       const key = 'lesson:' + el.lesson.id;
       if (this.cache.has(key)) return this.cache.get(key);
-      const r = await this.lms.client.lessonTasks(el.courseId, el.lesson.id, el.groupId);
+      // Материалы и задания грузим параллельно: раскрытие урока не должно
+      // ждать двух последовательных запросов. Сбой материалов не ломает
+      // список заданий — это дополнительный, необязательный раздел.
+      const [tasksRes, materialsRes] = await Promise.all([
+        this.lms.client.lessonTasks(el.courseId, el.lesson.id, el.groupId),
+        this.lms.client.lessonMaterials(el.courseId, el.lesson.id, el.groupId)
+      ]);
+      const r = tasksRes;
       if (debugEnabled()) {
         try {
           fs.writeFileSync(path.join(diagDir(), 'lesson-tasks-' + el.lesson.id + '.json'), JSON.stringify(r.json, null, 2), 'utf8');
+          fs.writeFileSync(path.join(diagDir(), 'lesson-materials-' + el.lesson.id + '.json'), JSON.stringify(materialsRes.json, null, 2), 'utf8');
         } catch (e) { }
       }
-      const arr = asArray(r.json, ['tasks', 'items', 'data', 'results']);
       let list = [];
+      const materialsArr = materialsRes && materialsRes.status === 200
+        ? asArray(materialsRes.json, ['materials', 'items', 'data', 'results'])
+        : null;
+      const materials = Array.isArray(materialsArr) ? materialsArr.filter(m => m && pick(m, 'id') !== undefined) : [];
+      for (const m of materials) list.push(new MaterialNode(this.lms, m, el, materials));
+      const arr = asArray(r.json, ['tasks', 'items', 'data', 'results']);
       if (r.status === 200 && arr) {
-        // Плоский список задач или список групп с tasks — во втором случае
-        // итерируем arr (r.json — объект, он не итерируется).
-        const groups = Array.isArray(r.json) ? r.json : (arr.length && arr[0] && arr[0].tasks ? arr : [r.json]);
-        for (const group of groups) {
-          const tasks = pick(group, 'tasks') || pick(group, 'problems') || pick(group, 'items') || [];
-          const typeName = pick(group, 'type') || pick(group, 'title') || '';
-          for (const t of tasks) {
-            if (!t) continue;
-            list.push(new TaskNode(this.lms, t, el, typeName));
-          }
+        // Разбор формы ответа (группы по тегу или плоский список) общий с
+        // ведомостью оценок — src/util.js:flattenLessonTasks.
+        const flat = flattenLessonTasks(r.json);
+        for (const { task, typeName } of flat) list.push(new TaskNode(this.lms, task, el, typeName));
+        // Прогресс урока считаем из тех же данных, что и список заданий:
+        // lessonTasks уже содержит solution.score и scoreMax, отдельных
+        // запросов на баллы не нужно.
+        if (flat.length && typeof this.lms.noteLessonProgress === 'function') {
+          this.lms.noteLessonProgress(el.courseId, el.lesson, flat.map(x => gradeRow(x.task, this.lms.statusOf(x.task))));
         }
       } else {
-        list = [errorItem('Не загрузились задания (HTTP ' + r.status + ')', r.text)];
+        list.push(errorItem('Не загрузились задания (HTTP ' + r.status + ')', r.text));
       }
       this.cache.set(key, list);
       this.lms.ensureStatuses(list);
@@ -104,7 +133,16 @@ class CourseNode extends vscode.TreeItem {
     this.contextValue = 'lmsCourse';
     this.iconPath = new vscode.ThemeIcon('book');
     const rating = pick(course, 'rating');
-    this.tooltip = rating !== undefined && rating !== null ? `Рейтинг: ${rating}` : lms.courseLabel(course);
+    const prog = progressOf(lms, 'courseProgress', this.courseId);
+    const bits = [];
+    if (rating !== undefined && rating !== null) bits.push('Рейтинг: ' + roundScore(rating));
+    if (prog && prog.total) bits.push(progressLine(prog, 10));
+    if (prog && !prog.full) bits.push('Посчитано по ' + (prog.lessonsKnown || 0) + ' раскрытым урокам — «Мои оценки» считает весь курс');
+    if (prog && prog.ts) bits.push('Обновлено: ' + updatedText(prog.ts));
+    this.tooltip = bits.join('\n') || lms.courseLabel(course);
+    // Полоска только когда известна вся сумма курса, иначе цифры выглядят
+    // как настоящие, а по факту считают лишь раскрытые уроки.
+    if (prog && prog.full && prog.total) this.description = progressLine(prog, 6);
   }
 }
 
@@ -119,11 +157,42 @@ class LessonNode extends vscode.TreeItem {
     this.iconPath = new vscode.ThemeIcon('notebook');
     const passed = pick(lesson, 'numPassed', 'num_passed');
     const total = pick(lesson, 'numTasks', 'num_tasks');
-    const deadline = pick(lesson, 'deadline');
+    const dl = deadlineInfo(pick(lesson, 'deadline'));
+    const prog = progressOf(lms, 'progressMap', pick(lesson, 'id'));
+    const bits = [];
+    if (prog && prog.total) bits.push(progressLine(prog, 10));
+    else if (total !== undefined) bits.push('Задач: ' + (passed || 0) + '/' + total);
+    if (dl.state !== 'none') bits.push('Дедлайн: ' + dl.when + (dl.hint ? ' (' + dl.hint + ')' : ''));
+    if (prog && prog.overdue) bits.push('Просрочено обязательных: ' + prog.overdue);
+    this.tooltip = bits.join('\n') || undefined;
+    if (prog && prog.total) this.description = progressLine(prog, 6);
+  }
+}
+
+class MaterialNode extends vscode.TreeItem {
+  constructor(lms, material, lessonNode, materials) {
+    super(materialDisplayTitle(material), vscode.TreeItemCollapsibleState.None);
+    this.material = material;
+    this.materialId = pick(material, 'id');
+    this.groupId = lessonNode.groupId;
+    this.courseId = lessonNode.courseId;
+    this.lessonId = lessonNode.lesson && lessonNode.lesson.id;
+    this.courseTitle = lessonNode.courseTitle;
+    this.lessonTitle = lessonNode.label;
+    this.materials = Array.isArray(materials) ? materials : [];
+    this.contextValue = 'lmsMaterial';
+    this.iconPath = new vscode.ThemeIcon('book', new vscode.ThemeColor('charts.blue'));
+    this.description = materialTypeLabel(pick(material, 'type'));
     this.tooltip = [
-      total !== undefined ? `Задач: ${passed || 0}/${total}` : null,
-      deadline ? `Дедлайн: ${deadline}` : null
-    ].filter(Boolean).join('\n') || undefined;
+      'Тип: ' + this.description,
+      lessonNode.label ? 'Урок: ' + lessonNode.label : null,
+      'Нажмите, чтобы читать в VS Code'
+    ].filter(Boolean).join('\n');
+    this.command = {
+      command: 'yandexLms.openMaterial',
+      title: 'Открыть материал',
+      arguments: [this]
+    };
   }
 }
 
@@ -144,24 +213,24 @@ class TaskNode extends vscode.TreeItem {
       arguments: [this]
     };
     const scoreMax = pick(task, 'scoreMax', 'score_max');
-    const deadline = pick(task, 'deadline');
-    const dl = deadline ? new Date(deadline) : null;
-    const deadlineTxt = dl && !Number.isNaN(dl.getTime())
-      ? dl.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })
-      : (deadline || '');
+    const dl = deadlineInfo(pick(task, 'deadline'));
+    const optional = !!(pick(task, 'isOptional', 'is_optional'));
     this.tooltip = [
       typeName ? 'Тип: ' + typeName : null,
       scoreMax !== undefined ? 'Баллов: ' + scoreMax : null,
-      deadlineTxt ? 'Дедлайн: ' + deadlineTxt : null
+      dl.state !== 'none' ? 'Дедлайн: ' + dl.when + (dl.hint ? ' (' + dl.hint + ')' : '') : null,
+      optional ? 'Дополнительная задача' : null
     ].filter(Boolean).join('\n') || undefined;
     // Дедлайн в описании не показываем — он есть в подсказке при наведении:
     // строка «до 11.01.2027» у каждого задания только засоряла список.
+    // Исключение — просроченная незачтённая задача: её надо видеть сразу.
     const st = lms.statusOf(task);
     if (st && st.badge && (st.badge.icon || st.badge.desc)) {
       this.iconPath = new vscode.ThemeIcon(st.badge.icon || 'code', st.badge.color ? new vscode.ThemeColor(st.badge.color) : undefined);
       const scoreTxt = (st.score !== undefined && st.score !== null && scoreMax !== undefined)
         ? ` ${st.score}/${scoreMax}` : '';
       this.description = [st.badge.desc + scoreTxt, this.description].filter(Boolean).join(' · ');
+      if (dl.state === 'overdue' && st.badge.icon !== 'pass') this.description += ' · просрочено';
       this.tooltip = [this.tooltip, 'Статус: ' + st.badge.desc].filter(Boolean).join(' — ').replace(/\n/g, ' · ');
     } else {
       this.iconPath = new vscode.ThemeIcon('code');
@@ -169,4 +238,4 @@ class TaskNode extends vscode.TreeItem {
   }
 }
 
-module.exports = { LmsTreeProvider, CourseNode, LessonNode, TaskNode, errorItem };
+module.exports = { LmsTreeProvider, CourseNode, LessonNode, MaterialNode, TaskNode, errorItem };
